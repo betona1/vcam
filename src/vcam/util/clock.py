@@ -14,11 +14,13 @@ class SessionClock:
         self._start_ns: int | None = None
         self._paused_at: int | None = None
         self._paused_total = 0
+        self._pause_pending = False
 
     def start(self) -> int:
         with self._lock:
             self._start_ns = self._now()
-            self._paused_at = None
+            # 캡처가 열리기 전에 일시정지를 누른 경우: 시작하자마자 일시정지 상태로 둔다
+            self._paused_at = self._start_ns if self._pause_pending else None
             self._paused_total = 0
             return self._start_ns
 
@@ -28,15 +30,18 @@ class SessionClock:
 
     @property
     def is_paused(self) -> bool:
-        return self._paused_at is not None
+        return self._paused_at is not None or (self._start_ns is None and self._pause_pending)
 
     def pause(self) -> None:
         with self._lock:
-            if self._start_ns is not None and self._paused_at is None:
+            if self._start_ns is None:
+                self._pause_pending = True
+            elif self._paused_at is None:
                 self._paused_at = self._now()
 
     def resume(self) -> None:
         with self._lock:
+            self._pause_pending = False
             if self._paused_at is not None:
                 self._paused_total += self._now() - self._paused_at
                 self._paused_at = None

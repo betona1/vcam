@@ -103,5 +103,5 @@ def finalize_with_fallback(
             return finalize_to_output(ffmpeg, partial, output_dir, stem, tolerant, audio), notes
         except (MuxError, ValidationError) as exc:
             log.error("오디오 합치기 실패, 영상만 저장합니다: %s", exc)
-            notes.append("소리를 합치지 못해 영상만 저장했습니다. 원본 소리 파일은 로그 폴더 안내를 참고하세요.")
+            notes.append("소리를 합치지 못해 영상만 저장했습니다.")
     return finalize_to_output(ffmpeg, partial, output_dir, stem, tolerant), notes

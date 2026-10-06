@@ -14,6 +14,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractItemView,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -119,7 +124,10 @@ class EditorWindow(QMainWindow):
         self._ffmpeg_lookup = ffmpeg_lookup  # () -> FfmpegPaths | None
         self.files: list[MediaFile] = []
         self.current: MediaFile | None = None
-        self.segments: dict[Path, list[Segment]] = {}
+        self.segment_sets: dict[str, dict[Path, list[Segment]]] = {"keep": {}, "remove": {}}
+        self._load_gen = 0
+        self._job_thread: threading.Thread | None = None
+        self._force_close = False
         self.split_points: dict[Path, list[float]] = {}
         self.sel_in: float | None = None
         self.sel_out: float | None = None
@@ -143,12 +151,18 @@ class EditorWindow(QMainWindow):
         self._apply_icons()
         self._select_tool("cut")
 
+    @property
+    def segments(self) -> dict[Path, list[Segment]]:
+        """현재 작업의 구간 표: '구간 제거'는 지울 구간, 나머지 작업은 남길(대상) 구간."""
+        return self.segment_sets["remove" if self.tool == "remove" else "keep"]
+
     # ── 구성 ───────────────────────────────────────────────────────────────
     def _icon_btn(self, name: str, tip: str, slot, text: str = "", color: str = "text") -> QToolButton:
         b = QToolButton()
         b.setToolTip(tip)
         b.setAccessibleName(tip)
         b.setIconSize(QSize(18, 18))
+        b.setFocusPolicy(Qt.FocusPolicy.TabFocus)  # 클릭해도 포커스를 가져가지 않아 편집 단축키가 계속 동작
         if text:
             b.setText(text)
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -177,6 +191,7 @@ class EditorWindow(QMainWindow):
             b.setText(t.label)
             b.setToolTip(t.hint)
             b.setCheckable(True)
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setProperty("role", "mode")
             b.setIconSize(QSize(20, 20))
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -262,6 +277,7 @@ class EditorWindow(QMainWindow):
         mark.addSpacing(10)
         self.add_seg_btn = QPushButton("구간 추가 (Enter)")
         self.add_seg_btn.setProperty("role", "primary")
+        self.add_seg_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.add_seg_btn.clicked.connect(self.add_segment)
         mark.addWidget(self.add_seg_btn)
         mark.addStretch(1)
@@ -287,6 +303,7 @@ class EditorWindow(QMainWindow):
         self.seg_tree.setHeaderLabels(["#", "시작", "끝", "길이"])
         self.seg_tree.setRootIsDecorated(False)
         self.seg_tree.setMaximumHeight(150)
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self.seg_tree, self.delete_segment, context=Qt.ShortcutContext.WidgetShortcut)
         self.seg_tree.itemDoubleClicked.connect(lambda item, _c: self.player.seek(item.data(1, Qt.ItemDataRole.UserRole)))
         sl.addWidget(self.seg_tree)
         self.stack.addWidget(seg_page)
@@ -373,8 +390,10 @@ class EditorWindow(QMainWindow):
         self.audio_fmt = QComboBox()
         for key, (label, _ext, _codec) in AUDIO_FORMATS.items():
             self.audio_fmt.addItem(label, key)
+        self.audio_fmt_label = QLabel("소리 형식")
         af = QHBoxLayout()
         af.addWidget(self.opt_extract)
+        af.addWidget(self.audio_fmt_label)
         af.addWidget(self.audio_fmt, 1)
         self.opt_mute = QCheckBox("영상에서 소리 제거")
         self.opt_stamp = QCheckBox("타임스탬프 정보 저장 (.txt)")
@@ -436,18 +455,51 @@ class EditorWindow(QMainWindow):
         return bar
 
     def _shortcuts(self) -> None:
-        for keys, slot in (
-            ("Space", self.player.toggle_play), ("Left", lambda: self.player.step(-1)), ("Right", lambda: self.player.step(1)),
-            ("Shift+Left", lambda: self.player.jump(-5)), ("Shift+Right", lambda: self.player.jump(5)),
-            ("[", self.mark_in), ("]", self.mark_out), ("I", self.mark_in), ("O", self.mark_out),
-            ("Return", self.add_segment), ("Enter", self.add_segment), ("Delete", self.delete_segment),
-            ("S", self.add_split_point), ("Home", lambda: self.player.seek(0)),
-            ("End", lambda: self.player.seek(self.current.duration if self.current else 0)),
-            (QKeySequence.StandardKey.Open, self.open_dialog), (QKeySequence.StandardKey.Save, self.save_project),
-        ):  # fmt: skip
+        # Ctrl 조합만 창 전체 단축키로 둔다. 나머지 편집 키는 keyPressEvent에서 처리해
+        # 입력칸·체크박스·목록 등에 포커스가 있으면 그 컨트롤이 키를 쓰도록 한다.
+        for keys, slot in ((QKeySequence.StandardKey.Open, self.open_dialog), (QKeySequence.StandardKey.Save, self.save_project)):
             sc = QShortcut(QKeySequence(keys), self)
             sc.setContext(Qt.ShortcutContext.WindowShortcut)
             sc.activated.connect(slot)
+        self._keymap = {
+            (Qt.Key.Key_Space, False): self.player.toggle_play,
+            (Qt.Key.Key_Left, False): lambda: self.player.step(-1), (Qt.Key.Key_Right, False): lambda: self.player.step(1),
+            (Qt.Key.Key_Left, True): lambda: self.player.jump(-5), (Qt.Key.Key_Right, True): lambda: self.player.jump(5),
+            (Qt.Key.Key_BracketLeft, False): self.mark_in, (Qt.Key.Key_BracketRight, False): self.mark_out,
+            (Qt.Key.Key_I, False): self.mark_in, (Qt.Key.Key_O, False): self.mark_out,
+            (Qt.Key.Key_Return, False): self.add_segment, (Qt.Key.Key_Enter, False): self.add_segment,
+            (Qt.Key.Key_Delete, False): self.delete_segment, (Qt.Key.Key_S, False): self.add_split_point,
+            (Qt.Key.Key_Home, False): lambda: self.player.seek(0),
+            (Qt.Key.Key_End, False): lambda: self.player.seek(self.current.duration if self.current else 0),
+        }  # fmt: skip
+
+    def _focus_owns_key(self, key: Qt.Key) -> bool:
+        """포커스가 있는 컨트롤이 이 키를 써야 하면 True(입력칸 글자, 목록 화살표, 버튼 Space 등)."""
+        focus = QApplication.focusWidget()
+        nav = {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End}
+        activate = {Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter}
+        if isinstance(focus, (QLineEdit, QAbstractSpinBox)):
+            return True
+        if isinstance(focus, (QComboBox, QAbstractSlider)):
+            return key in nav or key in activate
+        if isinstance(focus, QAbstractItemView):
+            return key in nav or key in activate or key == Qt.Key.Key_Delete
+        if isinstance(focus, QAbstractButton):
+            return key in activate
+        return False
+
+    def keyPressEvent(self, e) -> None:  # noqa: N802
+        mods = e.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        key = Qt.Key(e.key())
+        if mods not in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier) or self._focus_owns_key(key):
+            super().keyPressEvent(e)
+            return
+        action = self._keymap.get((key, bool(mods & Qt.KeyboardModifier.ShiftModifier)))
+        if action is None:
+            super().keyPressEvent(e)
+            return
+        action()
+        e.accept()
 
     def _apply_icons(self) -> None:
         p = self.p
@@ -480,18 +532,26 @@ class EditorWindow(QMainWindow):
         if ff is None:
             return
         self.status.setText("파일을 분석하는 중…")
+        gen = self._load_gen
 
         def work() -> None:
+            # 순서를 지키기 위해 한 스레드에서 차례로 분석한다
             for path in paths:
                 try:
-                    self._bridge.loaded.emit(load_media(ff, path), None)
+                    self._bridge.loaded.emit((gen, load_media(ff, path)), None)
                 except EditError as exc:
-                    self._bridge.loaded.emit(None, f"{path.name}: {exc}")
+                    self._bridge.loaded.emit((gen, None), f"{path.name}: {exc}")
+                except Exception as exc:  # noqa: BLE001 - 작업 스레드 최상위
+                    log.exception("파일 분석 실패")
+                    self._bridge.loaded.emit((gen, None), f"{path.name}: 분석하지 못했습니다 ({exc})")
 
         threading.Thread(target=work, name="vcam-edit-probe", daemon=True).start()
 
     @Slot(object, object)
-    def _on_loaded(self, media: MediaFile | None, error: str | None) -> None:
+    def _on_loaded(self, payload, error: str | None) -> None:
+        gen, media = payload
+        if gen != self._load_gen:
+            return  # 프로젝트를 새로 열기 전에 시작된 분석 결과
         if error:
             QMessageBox.warning(self, "파일 열기", error)
             return
@@ -530,11 +590,15 @@ class EditorWindow(QMainWindow):
         if row < 0:
             return
         media = self.files.pop(row)
-        self.segments.pop(media.path, None)
+        for table in self.segment_sets.values():
+            table.pop(media.path, None)
         self.split_points.pop(media.path, None)
+        # takeItem은 줄을 지우기 전에 currentRowChanged를 보내므로 신호를 막고 직접 갱신한다
+        self.file_list.blockSignals(True)
         self.file_list.takeItem(row)
-        if not self.files:
-            self._on_file_row(-1)
+        self.file_list.blockSignals(False)
+        self.current = None
+        self._on_file_row(self.file_list.currentRow())
 
     def _move_file(self, delta: int) -> None:
         row = self.file_list.currentRow()
@@ -542,9 +606,11 @@ class EditorWindow(QMainWindow):
         if row < 0 or not 0 <= new < len(self.files):
             return
         self.files.insert(new, self.files.pop(row))
+        self.file_list.blockSignals(True)
         item = self.file_list.takeItem(row)
         self.file_list.insertItem(new, item)
         self.file_list.setCurrentRow(new)
+        self.file_list.blockSignals(False)
 
     def dragEnterEvent(self, e: QDragEnterEvent) -> None:  # noqa: N802
         if e.mimeData().hasUrls():
@@ -603,7 +669,7 @@ class EditorWindow(QMainWindow):
 
     def delete_segment(self) -> None:
         item = self.seg_tree.currentItem()
-        if self.current is None or item is None:
+        if self.current is None or item is None or self.tool == "split":
             return
         segs = self.segments.get(self.current.path, [])
         idx = self.seg_tree.indexOfTopLevelItem(item)
@@ -652,6 +718,7 @@ class EditorWindow(QMainWindow):
             self.seg_tree.clear()
             return
         if self.tool == "split":
+            self.seg_tree.clear()
             parts = self._split_parts(m)
             self.timeline.set_segments(parts, "part")
             self.timeline.set_split_points([s.start for s in parts[1:]])
@@ -678,12 +745,6 @@ class EditorWindow(QMainWindow):
         self.hint.setText(t.hint)
         self.stack.setCurrentIndex(1 if key == "split" else 0)
         self.add_seg_btn.setText("나누기 지점 추가 (S)" if key == "split" else "구간 추가 (Enter)")
-        if key == "convert":
-            self.mode_encode.setChecked(True)
-        if key == "extract":
-            self.opt_extract.setChecked(True)
-        if key == "mute":
-            self.opt_mute.setChecked(True)
         self.start_btn.setText({"cut": "자르기 시작", "remove": "구간 제거 시작", "split": "나누기 시작", "merge": "합치기 시작",
                                 "extract": "소리 추출 시작", "mute": "소리 제거 시작", "convert": "변환 시작"}[key])  # fmt: skip
         self._refresh_output_controls()
@@ -695,9 +756,9 @@ class EditorWindow(QMainWindow):
         encode = self.mode_encode.isChecked() or k == "convert"
         self.enc_box.setVisible(encode and k != "extract")
         self.opt_merge.setVisible(k == "cut")
-        self.opt_extract.setVisible(k != "mute")
+        self.opt_extract.setVisible(k not in ("mute", "extract"))
+        self.audio_fmt_label.setVisible(k == "extract")
         self.audio_fmt.setVisible(k != "mute")
-        self.opt_extract.setEnabled(k != "extract")
         self.opt_mute.setVisible(k not in ("extract", "mute"))
         self.opt_all.setVisible(k in ("extract", "mute", "convert"))
         self.opt_stamp.setVisible(k in ("cut", "remove", "split", "merge"))
@@ -732,9 +793,12 @@ class EditorWindow(QMainWindow):
             raise EditError("먼저 편집할 파일을 열어 주세요.")
         t = TOOL_BY_KEY[self.tool]
         mode = "encode" if (self.tool == "convert" or self.mode_encode.isChecked()) and self.tool != "extract" else "fast"
-        common = dict(mode=mode, encode=self.encode, suffix=t.suffix, save_timestamps=self.opt_stamp.isChecked() and self.opt_stamp.isVisible(),
-                      extract_audio=self.audio_fmt.currentData() if self.opt_extract.isChecked() and self.opt_extract.isVisible() else None,
-                      remove_audio=self.opt_mute.isChecked() and self.opt_mute.isVisible(),
+        k = self.tool
+        # 보이는지(isVisible)가 아니라 작업 종류로 옵션 적용 여부를 정한다(창이 숨겨져 있어도 같게 동작)
+        common = dict(mode=mode, encode=self.encode, suffix=t.suffix,
+                      save_timestamps=self.opt_stamp.isChecked() and k in ("cut", "remove", "split", "merge"),
+                      extract_audio=self.audio_fmt.currentData() if self.opt_extract.isChecked() and k not in ("mute", "extract") else None,
+                      remove_audio=self.opt_mute.isChecked() and k not in ("extract", "mute"),
                       base_name=self.out_name.text().strip() or None)  # fmt: skip
 
         def out_dir(m: MediaFile) -> Path:
@@ -762,6 +826,8 @@ class EditorWindow(QMainWindow):
         if self.tool == "merge":
             if len(self.files) < 2:
                 raise EditError("합칠 파일을 2개 이상 추가해 주세요.")
+            if len({f.has_video for f in self.files}) > 1:
+                raise EditError("영상 파일과 소리 파일은 함께 합칠 수 없습니다. 같은 종류끼리 합쳐 주세요.")
             pieces = tuple(Piece(f, s) for f in self.files for s in self._segments_or_whole(f))
             return [EditJob(pieces, out_dir(self.files[0]), merge=True, **common)]
         targets = self.files if self.opt_all.isChecked() else [m]
@@ -774,11 +840,14 @@ class EditorWindow(QMainWindow):
                 jobs.append(EditJob(pieces, out_dir(f), merge=True, save_video=False,
                                     **{**common, "extract_audio": self.audio_fmt.currentData(), "mode": "fast"}))  # fmt: skip
             elif self.tool == "mute":
+                if not f.has_video:
+                    continue
                 jobs.append(EditJob(pieces, out_dir(f), merge=True, **{**common, "remove_audio": True}))
             else:  # convert
                 jobs.append(EditJob(pieces, out_dir(f), merge=True, **{**common, "mode": "encode"}))
         if not jobs:
-            raise EditError("처리할 파일이 없습니다 (소리가 있는 파일이 없을 수 있습니다).")
+            raise EditError({"extract": "소리가 있는 파일이 없습니다.", "mute": "영상이 있는 파일이 없습니다 (소리 파일은 소리 제거를 할 수 없습니다)."}
+                            .get(self.tool, "처리할 파일이 없습니다."))  # fmt: skip
         return jobs
 
     def start(self) -> None:
@@ -816,7 +885,21 @@ class EditorWindow(QMainWindow):
                 log.exception("편집 작업 실패")
                 self._bridge.done.emit((outputs, notes), f"예기치 않은 오류: {exc!r}")
 
-        threading.Thread(target=work, name="vcam-edit-job", daemon=True).start()
+        self._job_thread = threading.Thread(target=work, name="vcam-edit-job", daemon=True)
+        self._job_thread.start()
+
+    @property
+    def is_busy(self) -> bool:
+        return self._cancel is not None
+
+    def shutdown(self, timeout: float = 15.0) -> None:
+        """앱 종료 시: 진행 중인 작업을 취소하고(FFmpeg 종료, 임시 파일 정리) 끝날 때까지 잠시 기다린다."""
+        self._force_close = True
+        if self._cancel is not None:
+            self._cancel.set()
+        if self._job_thread is not None:
+            self._job_thread.join(timeout)
+        self.player.pause()
 
     def cancel_job(self) -> None:
         if self._cancel is not None:
@@ -876,6 +959,9 @@ class EditorWindow(QMainWindow):
                 self._bridge.captured.emit(capture_frame(ff, media, at, out))
             except EditError as exc:
                 self._bridge.captured.emit(str(exc))
+            except Exception as exc:  # noqa: BLE001 - 작업 스레드 최상위
+                log.exception("프레임 저장 실패")
+                self._bridge.captured.emit(f"프레임을 저장하지 못했습니다: {exc}")
 
         threading.Thread(target=work, name="vcam-capture-frame", daemon=True).start()
 
@@ -899,10 +985,11 @@ class EditorWindow(QMainWindow):
             return
         ProjectFile(
             files=[f.path for f in self.files],
-            segments={str(k): v for k, v in self.segments.items()},
+            segments={str(k): v for k, v in self.segment_sets["keep"].items()},
             split_points={str(k): v for k, v in self.split_points.items()},
             tool=self.tool, mode="encode" if self.mode_encode.isChecked() else "fast", encode=self.encode,
-            options={"merge": self.opt_merge.isChecked(), "stamp": self.opt_stamp.isChecked()},
+            options={"merge": self.opt_merge.isChecked(), "stamp": self.opt_stamp.isChecked(),
+                     "remove_segments": {str(k): [[s.start, s.end] for s in v] for k, v in self.segment_sets["remove"].items()}},
         ).save(Path(path))  # fmt: skip
         self.status.setText(f"프로젝트 저장: {Path(path).name}")
 
@@ -914,16 +1001,23 @@ class EditorWindow(QMainWindow):
     def load_project(self, path: Path) -> None:
         try:
             proj = ProjectFile.load(path)
-        except (OSError, ValueError, KeyError) as exc:
+        except Exception as exc:  # noqa: BLE001 - 손상된 프로젝트 파일
+            log.warning("프로젝트 열기 실패", exc_info=True)
             QMessageBox.warning(self, "프로젝트 열기", f"프로젝트를 읽지 못했습니다: {exc}")
             return
         missing = [f for f in proj.files if not f.exists()]
         if missing:
             QMessageBox.warning(self, "프로젝트 열기", "찾을 수 없는 파일이 있습니다:\n" + "\n".join(str(m) for m in missing[:5]))
+        self._load_gen += 1
         self.files.clear()
+        self.file_list.blockSignals(True)
         self.file_list.clear()
+        self.file_list.blockSignals(False)
         self.current = None
-        self.segments = {Path(k): v for k, v in proj.segments.items()}
+        self._on_file_row(-1)
+        self.segment_sets["keep"] = {Path(k): v for k, v in proj.segments.items()}
+        self.segment_sets["remove"] = {Path(k): [Segment(float(a), float(b)) for a, b in v]
+                                       for k, v in proj.options.get("remove_segments", {}).items()}  # fmt: skip
         self.split_points = {Path(k): v for k, v in proj.split_points.items()}
         self.encode = proj.encode
         self.enc_summary.setText(summarize(self.encode))
@@ -934,7 +1028,7 @@ class EditorWindow(QMainWindow):
         self.open_files([f for f in proj.files if f.exists()])
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        if self._cancel is not None:
+        if self._cancel is not None and not self._force_close:
             if QMessageBox.question(self, "vCAM 편집기", "작업이 진행 중입니다. 취소하고 닫을까요?") != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return

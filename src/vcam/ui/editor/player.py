@@ -31,7 +31,8 @@ class Player(QWidget):
         self.video.setMinimumSize(QSize(480, 270))
         self.video.setStyleSheet("background: #000;")
         self.player.setVideoOutput(self.video)
-        self.player.positionChanged.connect(lambda ms: self._on_position(ms / 1000))
+        self.player.positionChanged.connect(lambda ms: self._on_position(self.position() if self._target is not None else ms / 1000))
+        self.player.mediaStatusChanged.connect(self._on_status)
         self.player.playbackStateChanged.connect(lambda _s: self._sync_play_icon())
 
         self.play_btn = self._btn("play", "재생 / 일시정지 (Space)", self.toggle_play, 22)
@@ -46,6 +47,7 @@ class Player(QWidget):
         self.volume.setRange(0, 100)
         self.volume.setValue(80)
         self.volume.setFixedWidth(90)
+        self.volume.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.volume.setAccessibleName("미리보기 음량")
         self.volume.valueChanged.connect(lambda v: self._audio.setVolume(v / 100))
         self._vol_icon = QLabel()
@@ -68,11 +70,15 @@ class Player(QWidget):
         layout.addLayout(controls)
         self.apply_palette(palette_tokens)
         self._pending_seek: float | None = None
+        self._target: float | None = None  # 마지막으로 요청한 위치(백엔드가 따라올 때까지)
+        self._target_timer = QTimer(self, singleShot=True, interval=400)
+        self._target_timer.timeout.connect(self._clear_target)
         self._seek_timer = QTimer(self, singleShot=True, interval=30)
         self._seek_timer.timeout.connect(self._flush_seek)
 
     def _btn(self, name: str, tip: str, slot, size: int = 18) -> QToolButton:
         b = QToolButton(self)
+        b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         b.setToolTip(tip)
         b.setAccessibleName(tip)
         b.setIconSize(QSize(size, size))
@@ -91,13 +97,19 @@ class Player(QWidget):
     def load(self, path: Path | None, duration: float = 0.0, fps: float = 30.0) -> None:
         self.player.stop()
         self.duration, self.fps = duration, fps or 30.0
+        self._pending_seek = self._target = None
         self.player.setSource(QUrl.fromLocalFile(str(path)) if path else QUrl())
         self._on_position(0.0)
-        if path:  # 첫 프레임을 보여 준다
-            self.player.play()
-            QTimer.singleShot(80, self.player.pause)
+
+    def _on_status(self, status) -> None:
+        # 불러오기가 끝나면 재생하지 않고 0초 위치로 이동해 첫 프레임을 보여 준다
+        if status == QMediaPlayer.MediaStatus.LoadedMedia and self.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState:
+            self.player.pause()
+            self.player.setPosition(0)
 
     def toggle_play(self) -> None:
+        self._flush_seek()
+        self._target = None
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
         else:
@@ -114,8 +126,13 @@ class Player(QWidget):
 
     def _flush_seek(self) -> None:
         if self._pending_seek is not None:
+            self._target = self._pending_seek
             self.player.setPosition(int(self._pending_seek * 1000))
             self._pending_seek = None
+            self._target_timer.start()
+
+    def _clear_target(self) -> None:
+        self._target = None
 
     def step(self, frames: int) -> None:
         self.player.pause()
@@ -125,7 +142,11 @@ class Player(QWidget):
         self.seek(self.position() + seconds)
 
     def position(self) -> float:
-        return self._pending_seek if self._pending_seek is not None else self.player.position() / 1000
+        if self._pending_seek is not None:
+            return self._pending_seek
+        if self._target is not None:  # 비동기 이동이 아직 반영되지 않았을 수 있다
+            return self._target
+        return self.player.position() / 1000
 
     def _on_position(self, t: float) -> None:
         self.time_label.setText(f"{format_time(t)} / {format_time(self.duration)}")

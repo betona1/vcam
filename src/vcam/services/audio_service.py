@@ -99,7 +99,7 @@ class AudioService:
         return failed
 
     def begin_recording(self, clock: SessionClock, session_dir: Path) -> list[AudioTrack]:
-        self._writers = []
+        self.abort_recording()  # 이전 녹화의 기록기가 남아 있으면 닫는다
         tracks = []
         for kind, (_device, worker) in self._workers.items():
             if worker.status is not WorkerStatus.OK or not worker.samplerate:

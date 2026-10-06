@@ -80,6 +80,17 @@ class AudioWorker:
             return sink
 
     def _run(self) -> None:
+        try:
+            self._run_inner()
+        except Exception as exc:  # noqa: BLE001 - 스레드 최상위
+            log.exception("%s 오디오 스레드 예외", self.kind)
+            self._error = str(exc)
+            self.detach()
+            self.meter.reset()
+            self._status = WorkerStatus.FAILED
+            self._opened.set()
+
+    def _run_inner(self) -> None:
         attempts = 0
         while not self._stop.is_set():
             source = self._factory()
@@ -130,4 +141,10 @@ class AudioWorker:
             with self._lock:
                 sink = self._sink
             if sink is not None:
-                sink.write(block)
+                try:
+                    sink.write(block)
+                except OSError as exc:  # 디스크 가득 참 등: 이 트랙만 포기하고 녹화는 계속
+                    log.error("%s 소리 기록 실패, 이 트랙은 무음으로 남습니다: %s", self.kind, exc)
+                    self.detach()
+                    self._error = f"소리를 기록하지 못했습니다: {exc}"
+                    self._status = WorkerStatus.FAILED

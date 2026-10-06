@@ -124,7 +124,8 @@ class Timeline(QWidget):
             painter.fillRect(rect, fill)
             if self.segment_role == "remove":
                 painter.setPen(QPen(QColor(p.rec), 1.5))
-                for x in range(int(rect.left()) - int(track.height()), int(rect.right()), 9):
+                visible = rect.intersected(track)
+                for x in range(int(visible.left()) - int(track.height()), int(visible.right()) + 1, 9):
                     painter.drawLine(QPointF(x, track.bottom()), QPointF(x + track.height(), track.top()))
             painter.setPen(QPen(base, 2))
             painter.drawLine(QPointF(rect.left(), track.top()), QPointF(rect.left(), track.bottom()))
@@ -181,10 +182,14 @@ class Timeline(QWidget):
 
     # ── 마우스 ─────────────────────────────────────────────────────────────
     def _hit_mark(self, x: float) -> str | None:
-        for t, kind in ((self.sel_in, "in"), (self.sel_out, "out")):
-            if t is not None and abs(self.x_for(t) - x) <= MARK_HIT:
-                return kind
-        return None
+        hits = [(abs(self.x_for(t) - x), kind, t) for t, kind in ((self.sel_in, "in"), (self.sel_out, "out"))
+                if t is not None and abs(self.x_for(t) - x) <= MARK_HIT]  # fmt: skip
+        if not hits:
+            return None
+        if len(hits) == 2 and abs(hits[0][2] - hits[1][2]) < 1e-6:
+            # 두 깃발이 겹치면 마우스가 오른쪽이면 끝점, 왼쪽이면 시작점을 잡는다
+            return "out" if x >= self.x_for(hits[0][2]) else "in"
+        return min(hits)[1]
 
     def mousePressEvent(self, e: QMouseEvent) -> None:  # noqa: N802
         if self.duration <= 0 or e.button() != Qt.MouseButton.LeftButton:

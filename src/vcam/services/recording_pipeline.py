@@ -231,6 +231,13 @@ class RecordingPipeline:
             power.allow_sleep()
 
     def _encode_loop(self) -> None:
+        try:
+            self._encode_loop_inner()
+        except Exception as exc:  # noqa: BLE001 - 스레드 최상위: 기록 후 복구 경로로 넘긴다
+            log.exception("인코더 스레드 예외")
+            self._fail(UserFacingError("encoder_crash", "영상 저장 중 예기치 않은 오류가 발생했습니다.", repr(exc)))
+
+    def _encode_loop_inner(self) -> None:
         next_index = 0
         last: np.ndarray | None = None
         retried = False
@@ -269,7 +276,8 @@ class RecordingPipeline:
                         self._notes.append(f"{self._encoder} 실패로 x264로 전환")
                         self._encoder = "x264"
                         self._frames_written = 0
-                    next_index = index  # 새 파일은 현재 슬롯부터 시작
+                    # 새 파일도 0번 슬롯부터 채워(현재 프레임 반복) 소리와 시간축이 어긋나지 않게 한다
+                    next_index = 0
                     last = None
                     continue
                 self._fail(UserFacingError("encoder", "영상 인코더가 중단되었습니다. 이미 기록된 부분은 복구를 시도합니다.", str(exc)))

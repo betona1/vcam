@@ -109,6 +109,7 @@ class MainWindow(QMainWindow):
         self._themed: list[tuple[object, str, str]] = []  # (위젯/액션, 아이콘 이름, 색 토큰)
         self._last_result: RecordingResult | None = None
         self.editor: EditorWindow | None = None
+        self._screens_dirty = False
         self._selector: RegionSelector | None = None
         self._was_minimized_for_recording = False
 
@@ -512,7 +513,9 @@ class MainWindow(QMainWindow):
     def _on_screens_changed(self) -> None:
         if self.controller.is_busy:
             self.statusBar().showMessage("녹화 중 디스플레이 구성이 바뀌었습니다. 결과를 확인해 주세요.", 8000)
+            self._screens_dirty = True
             return
+        self._screens_dirty = False
         self._reload_monitors()
         self._restore_source()
 
@@ -582,7 +585,10 @@ class MainWindow(QMainWindow):
     def _show_guide(self, rect: Rect) -> None:
         if self.settings.show_guide_frame:
             self.guide.show_region(rect)
-            self.guide.set_locked(False)
+            if self.controller.is_busy:
+                self.guide.set_locked(True, "REC")
+            else:
+                self.guide.set_locked(False)
 
     @Slot(object)
     def _on_guide_changed(self, rect: Rect) -> None:
@@ -769,6 +775,9 @@ class MainWindow(QMainWindow):
         self.output_label.setToolTip(settings.output_dir)
 
     def open_settings(self) -> None:
+        if self.controller.is_busy:
+            self.statusBar().showMessage("녹화 중에는 설정을 바꿀 수 없습니다. 녹화를 마친 뒤 바꿔 주세요.", 5000)
+            return
         dialog = SettingsDialog(self.settings, self.p, self)
         if dialog.exec():
             old = self.settings
@@ -836,6 +845,10 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_recovery(self, manual: bool = False) -> None:
+        if self.controller.is_busy:
+            if manual:
+                self.statusBar().showMessage("녹화 중에는 복구를 실행할 수 없습니다.", 5000)
+            return
         sessions = find_incomplete_sessions(exclude=self.controller.current_session_dir)
         if not sessions:
             if manual:
@@ -903,6 +916,8 @@ class MainWindow(QMainWindow):
             self.result_edit.hide()
 
     def _update_state_widgets(self, state: RecordingState) -> None:
+        if self._screens_dirty and state in (RecordingState.READY, RecordingState.REVIEW, RecordingState.ERROR):
+            QTimer.singleShot(0, self._on_screens_changed)
         text, icon_name, color_key = STATE_TEXT[state]
         color = getattr(self.p, color_key)
         self.state_icon.setPixmap(icons.pixmap(icon_name, color, 18, self.devicePixelRatioF()))
@@ -981,7 +996,8 @@ class MainWindow(QMainWindow):
         box.setText(error.message)
         if error.detail:
             box.setDetailedText(error.detail)
-        box.exec()
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.open()
 
     def _play_last(self) -> None:
         if self._last_result and self._last_result.path.exists():
@@ -1063,6 +1079,11 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+        if self.editor is not None and self.editor.is_busy:
+            answer = QMessageBox.question(self, "vCAM 종료", "편집기에서 작업이 진행 중입니다. 작업을 취소하고 종료할까요?")
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self.controller.shutdown()
@@ -1073,6 +1094,7 @@ class MainWindow(QMainWindow):
         for w in (self.guide, self.bar, self.countdown):
             w.close()
         if self.editor is not None:
+            self.editor.shutdown()
             self.editor.close()
         if self._apply_update_on_exit is not None:
             try:

@@ -102,3 +102,46 @@ def test_real_system_audio_loopback(qtbot, tmp_path, ffmpeg):
         assert abs(media.audio_duration_s - media.video_duration_s) < 0.1
     finally:
         c.shutdown()
+
+
+def test_finalize_exception_does_not_hang_ui(qtbot, controller, monkeypatch):
+    """마무리 중 예기치 않은 오류(예: 디스크 가득 참)가 나도 '저장 중'에 멈추지 않는다."""
+    errors = []
+    controller.error_raised.connect(errors.append)
+    controller.start()
+    qtbot.waitUntil(lambda: controller.state is RecordingState.RECORDING, timeout=10_000)
+    qtbot.wait(800)
+
+    def boom(_duration):
+        raise OSError("디스크 가득 참(테스트)")
+
+    monkeypatch.setattr(controller.audio, "end_recording", boom)
+    controller.stop()
+    qtbot.waitUntil(lambda: controller.state is RecordingState.ERROR, timeout=30_000)
+    assert errors and errors[-1].code == "save_failed"
+
+
+def test_pause_immediately_after_start_is_honored(qtbot, controller):
+    controller.start()
+    qtbot.waitUntil(lambda: controller.state is RecordingState.RECORDING, timeout=10_000)
+    controller.toggle_pause()  # 캡처가 아직 열리는 중일 수 있다
+    assert controller.state is RecordingState.PAUSED
+    qtbot.wait(1200)
+    assert controller._pipeline.metrics().frames_written <= 2, "일시정지 중에는 프레임이 쌓이면 안 된다"
+    controller.toggle_pause()
+    qtbot.wait(1000)
+    with qtbot.waitSignal(controller.recording_saved, timeout=30_000) as saved:
+        controller.stop()
+    assert 0.6 <= saved.args[0].media.duration_s <= 1.5
+
+
+def test_shutdown_during_finalize_saves_once(qtbot, controller, tmp_path):
+    controller.start()
+    qtbot.waitUntil(lambda: controller.state is RecordingState.RECORDING, timeout=10_000)
+    qtbot.wait(1000)
+    controller.stop()
+    assert controller.state is RecordingState.FINALIZING
+    controller.shutdown()  # 앱 종료: 저장이 끝나기를 기다려야 하고 두 번 저장하면 안 된다
+    files = list((tmp_path / "out").glob("*.mp4"))
+    assert len(files) == 1, files
+    assert not list((tmp_path / "out").glob(".*vcam-tmp*"))

@@ -46,6 +46,8 @@ class Updater(QObject):
 
     def check(self, manual: bool) -> None:
         if self._busy:
+            if manual:
+                self.failed.emit("이미 새 버전을 확인하거나 내려받는 중입니다. 잠시 후 다시 시도해 주세요.")
             return
         self._busy = True
         threading.Thread(target=self._work, args=(manual,), name="vcam-update", daemon=True).start()

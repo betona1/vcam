@@ -29,6 +29,7 @@ class MediaFile:
     acodec: str = ""
     sample_rate: int = 0
     channels: int = 0
+    start_time: float = 0.0  # TS·MPG 등은 타임스탬프가 0이 아닌 값에서 시작한다
 
     def copy_compatible(self, other: MediaFile) -> bool:
         """스트림 복사로 이어 붙일 수 있는지(코덱·해상도·화소 형식·소리 형식이 같아야 한다)."""
@@ -63,7 +64,7 @@ def probe_file(ffmpeg: FfmpegPaths, path: Path) -> MediaFile:
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic")), None)
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
-    duration = float(data.get("format", {}).get("duration") or (video or audio or {}).get("duration") or 0)
+    duration = _float(data.get("format", {}).get("duration") or (video or audio or {}).get("duration"))
     if duration <= 0:
         raise ProbeError("재생 시간을 알 수 없는 파일입니다")
     return MediaFile(
@@ -79,11 +80,19 @@ def probe_file(ffmpeg: FfmpegPaths, path: Path) -> MediaFile:
         acodec=str(audio.get("codec_name", "")) if audio else "",
         sample_rate=int(audio.get("sample_rate", 0) or 0) if audio else 0,
         channels=int(audio.get("channels", 0) or 0) if audio else 0,
+        start_time=_float(data.get("format", {}).get("start_time")),
     )
 
 
-def keyframes(ffmpeg: FfmpegPaths, path: Path, timeout: float = 120) -> list[float]:
-    """영상 키프레임 시각 목록. 패킷 플래그만 읽으므로 디코딩보다 빠르다."""
+def _float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def keyframes(ffmpeg: FfmpegPaths, path: Path, timeout: float = 120, start_time: float = 0.0) -> list[float]:
+    """영상 키프레임 시각 목록(파일 시작 기준 초). 패킷 플래그만 읽으므로 디코딩보다 빠르다."""
     try:
         result = run(
             [str(ffmpeg.ffprobe), "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -97,7 +106,7 @@ def keyframes(ffmpeg: FfmpegPaths, path: Path, timeout: float = 120) -> list[flo
         parts = line.split(",")
         if len(parts) >= 2 and "K" in parts[1]:
             try:
-                times.append(float(parts[0]))
+                times.append(max(0.0, float(parts[0]) - start_time))
             except ValueError:
                 continue
     return sorted(times)

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -149,7 +150,7 @@ def download_release(
                 done += len(chunk)
                 if progress:
                     progress(done, release.size)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         part.unlink(missing_ok=True)
         raise UpdateError(f"업데이트를 내려받지 못했습니다: {exc}") from exc
     if digest.hexdigest() != expected:
@@ -198,32 +199,45 @@ def can_write(directory: Path) -> bool:
 APPLY_SCRIPT = r"""
 param([int]$ProcessId, [string]$Staged, [string]$Target, [string]$Log, [int]$Restart)
 $ErrorActionPreference = "Stop"
-function Write-Log($m) { Add-Content -Path $Log -Value ("{0:u} {1}" -f (Get-Date), $m) -Encoding UTF8 }
+function Write-Log($m) { Add-Content -Path $Log -Value ("{0:u} {1}" -f (Get-Date).ToUniversalTime(), $m) -Encoding UTF8 }
 Write-Log "update start: pid=$ProcessId"
 try { Wait-Process -Id $ProcessId -Timeout 120 -ErrorAction SilentlyContinue } catch {}
+if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
+    # 앱이 아직 실행 중이면 파일을 건드리지 않는다(다음 실행 때 다시 받는다)
+    Write-Log "app still running, update skipped"
+    exit 1
+}
 Start-Sleep -Milliseconds 500
 $stamp = Get-Date -Format "yyyyMMddHHmmss"
 $backup = Join-Path $Target (".vcam-backup-" + $stamp)
 New-Item -ItemType Directory -Path $backup | Out-Null
 $items = Get-ChildItem -LiteralPath $Staged -Force
+$added = @()
 try {
     foreach ($item in $items) {
         $dest = Join-Path $Target $item.Name
-        if (Test-Path -LiteralPath $dest) { Move-Item -LiteralPath $dest -Destination $backup -Force }
+        if (Test-Path -LiteralPath $dest) { Move-Item -LiteralPath $dest -Destination $backup -Force } else { $added += $dest }
         Copy-Item -LiteralPath $item.FullName -Destination $dest -Recurse -Force
     }
     Write-Log "update applied"
     Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
 } catch {
     Write-Log ("update failed, rolling back: " + $_)
+    $ErrorActionPreference = "Continue"
     foreach ($item in $items) {
         $dest = Join-Path $Target $item.Name
         $saved = Join-Path $backup $item.Name
         if (Test-Path -LiteralPath $saved) {
             if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
-            Move-Item -LiteralPath $saved -Destination $dest -Force
+            if (-not (Test-Path -LiteralPath $dest)) { Move-Item -LiteralPath $saved -Destination $dest -Force }
+            else { Write-Log "rollback: could not restore $dest" }
         }
     }
+    foreach ($dest in $added) { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
+    if (-not (Get-ChildItem -LiteralPath $backup -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Log "rolled back"
 }
 Remove-Item -LiteralPath $Staged -Recurse -Force -ErrorAction SilentlyContinue
 if ($Restart -eq 1) { Start-Process -FilePath (Join-Path $Target "vcam.exe") }

@@ -176,3 +176,31 @@ def test_launch_apply_runs_independently(tmp_path):
 
 def test_install_dir_none_in_dev():
     assert us.install_dir() is None
+
+
+def test_apply_script_rolls_back_cleanly_when_file_locked(tmp_path):
+    """교체 도중 실패하면 원래 파일로 되돌리고, 새로 추가한 파일과 백업 폴더를 남기지 않는다."""
+    target = tmp_path / "install"
+    (target / "_internal").mkdir(parents=True)
+    (target / "_internal" / "old.dll").write_bytes(b"old")
+    (target / "vcam.exe").write_bytes(b"old-exe")
+    staged = tmp_path / "staged" / "vcam"
+    (staged / "_internal").mkdir(parents=True)
+    (staged / "_internal" / "new.dll").write_bytes(b"new")
+    (staged / "newfile.txt").write_text("new")
+    (staged / "vcam.exe").write_bytes(b"new-exe")
+    script = us.write_apply_script()
+    dead = subprocess.Popen(["cmd", "/c", "exit"])
+    dead.wait()
+    with open(target / "vcam.exe", "rb"):  # 열린 파일은 이름을 바꿀 수 없어 교체가 실패한다
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+             "-ProcessId", str(dead.pid), "-Staged", str(staged), "-Target", str(target),
+             "-Log", str(tmp_path / "update.log"), "-Restart", "0"],
+            timeout=120,
+        )  # fmt: skip
+    assert (target / "vcam.exe").read_bytes() == b"old-exe"
+    assert (target / "_internal" / "old.dll").exists() and not (target / "_internal" / "new.dll").exists()
+    assert not (target / "newfile.txt").exists(), "실패한 업데이트가 추가한 파일은 지워야 한다"
+    assert not list(target.glob(".vcam-backup-*")), "되돌린 뒤 빈 백업 폴더를 남기면 안 된다"
+    assert "rolled back" in (tmp_path / "update.log").read_text(encoding="utf-8-sig")

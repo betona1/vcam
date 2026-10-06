@@ -37,6 +37,7 @@ from vcam.util.paths import cache_dir, sanitize_filename, unique_path
 log = logging.getLogger(__name__)
 
 Progress = Callable[[float, str], None]
+MPEG_RATES = (24000 / 1001, 24, 25, 30000 / 1001, 30, 50, 60000 / 1001, 60)
 
 
 class EditError(Exception):
@@ -194,8 +195,8 @@ def build_graph(pieces: Sequence[Piece], s: EncodeSettings, want_video: bool, wa
             labels.append(f"[v{i}]")
         if want_audio:
             if p.media.has_audio:
-                filters.append(f"[{src}:a:0]atrim=start={st}:end={en},asetpts=PTS-STARTPTS,"
-                               f"aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")  # fmt: skip
+                unify = ",aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo" if distinct else ""
+                filters.append(f"[{src}:a:0]atrim=start={st}:end={en},asetpts=PTS-STARTPTS{unify}[a{i}]")
             else:
                 silent = len(inputs)
                 inputs.append(["-f", "lavfi", "-t", f"{p.segment.duration:.6f}", "-i", "anullsrc=r=48000:cl=stereo"])
@@ -215,10 +216,13 @@ def build_graph(pieces: Sequence[Piece], s: EncodeSettings, want_video: bool, wa
     if want_video:
         post = [*_rotate_filters(s), *_scale_filters(s, gif)]
         fps = s.fps or (15 if gif else 0)
-        if fps:
-            post.append(f"fps={fps}")
+        if s.video_codec in ("mpeg1", "mpeg2"):  # MPEG-1/2는 표준 프레임레이트만 허용한다
+            want = fps or (first.fps if first and first.fps else 30)
+            fps = min(MPEG_RATES, key=lambda r: abs(r - want))
         if abs(s.speed - 1.0) > 1e-3:
             post.append(f"setpts=PTS/{s.speed:.4f}")
+        if fps:
+            post.append(f"fps={fps:.6g}")
         if gif:
             filters.append(f"[{v_cat}]{','.join(post)},split[g1][g2]")
             filters.append("[g1]palettegen=stats_mode=diff[pal]")
@@ -232,7 +236,9 @@ def build_graph(pieces: Sequence[Piece], s: EncodeSettings, want_video: bool, wa
         if abs(s.speed - 1.0) > 1e-3:
             post_a += _atempo_chain(s.speed)
         if s.normalize:
-            post_a.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+            # loudnorm은 192kHz로 내보내므로 반드시 다시 낮춘다(FLAC·Vorbis 실패, PCM 192kHz 방지)
+            # loudnorm은 아주 큰 덩어리로 내보내므로 일반 크기로 다시 나눈다(FLAC 블록 크기 제한)
+            post_a += ["loudnorm=I=-16:TP=-1.5:LRA=11", f"aresample={s.sample_rate or 48000}", "asetnsamples=n=1024:p=0"]
         filters.append(f"[{a_cat}]{','.join(post_a) or 'anull'}[aout]")
         audio_out = "[aout]"
     duration = sum(p.segment.duration for p in pieces) / (s.speed or 1.0)
@@ -248,7 +254,7 @@ def encode_args(ffmpeg: FfmpegPaths, graph: Graph, s: EncodeSettings, out: Path,
     if graph.video_out:
         enc = pick_video_encoder(ffmpeg, s.video_codec)
         args += ["-map", graph.video_out, "-c:v", enc, *video_quality_args(enc, s)]
-        if s.video_codec == "xvid" and enc == "mpeg4":
+        if s.video_codec == "xvid" and enc == "mpeg4" and container.key in ("avi", "mkv"):
             args += ["-vtag", "XVID"]
         if s.video_codec == "hevc" and container.key in ("mp4", "mov", "m4v"):
             args += ["-tag:v", "hvc1"]
@@ -276,6 +282,13 @@ def _finalize(ffmpeg: FfmpegPaths, tmp: Path, final_dir: Path, stem: str, ext: s
     return final
 
 
+_TAGS: dict[int, str] = {}
+
+
+def job_tag(job: EditJob) -> str:
+    return _TAGS[id(job)]
+
+
 def execute(job: EditJob, ffmpeg: FfmpegPaths, cancel: threading.Event | None = None,
             progress: Progress | None = None) -> JobResult:  # fmt: skip
     cancel = cancel or threading.Event()
@@ -284,8 +297,11 @@ def execute(job: EditJob, ffmpeg: FfmpegPaths, cancel: threading.Event | None = 
     if not job.pieces:
         raise EditError("처리할 구간이 없습니다")
     job.output_dir.mkdir(parents=True, exist_ok=True)
-    work = cache_dir() / "edit" / uuid.uuid4().hex[:10]
+    uid = uuid.uuid4().hex[:10]
+    work = cache_dir() / "edit" / uid
     work.mkdir(parents=True)
+    tmp_tag = f"{uid}.vcam-tmp"
+    _TAGS[id(job)] = tmp_tag
     s = job.encode.fixed()
     groups = [list(job.pieces)] if job.merge else [[p] for p in job.pieces]
     base = sanitize_filename(job.base_name or job.pieces[0].media.path.stem)
@@ -300,48 +316,75 @@ def execute(job: EditJob, ffmpeg: FfmpegPaths, cancel: threading.Event | None = 
             first = job.pieces[0].media
             if not all(first.copy_compatible(p.media) for p in job.pieces):
                 raise EditError("형식(코덱·해상도·소리)이 서로 다른 파일은 빠른 모드로 합칠 수 없습니다. 인코딩 모드를 선택해 주세요.")
+        if job.remove_audio and job.save_video and not any(p.media.has_video for p in job.pieces):
+            raise EditError("영상이 없는 소리 파일에서는 소리를 제거할 수 없습니다.")
         snapped = _snap(job, ffmpeg, result) if job.mode == "fast" else {}
         for gi, group in enumerate(groups):
             stem = f"{base}{job.suffix}" + (f"_{gi + 1:02d}" if len(groups) > 1 else "")
             label = f"{gi + 1}/{len(groups)}" if len(groups) > 1 else ""
             if job.save_video:
-                has_video = all(p.media.has_video for p in group)
+                kinds = {p.media.has_video for p in group}
+                if len(kinds) > 1:
+                    raise EditError("영상 파일과 소리 파일은 함께 이어 붙일 수 없습니다.")
+                has_video = kinds == {True}
                 if job.mode == "fast":
-                    out = _fast(job, ffmpeg, runner, [snapped.get(id(p), p) for p in group], work, stem, span(), label)
+                    fast_group = [snapped.get(id(p), p) for p in group if snapped.get(id(p), p).segment.duration >= 0.05]
+                    if not fast_group:
+                        result.notes.append(f"{stem}: 키프레임 간격보다 짧아 빠른 모드로는 만들 수 없어 건너뛰었습니다")
+                        done += 1
+                        continue
+                    out = _fast(job, ffmpeg, runner, fast_group, work, stem, span(), label)
                 else:
                     out = _encode(job, ffmpeg, runner, s, group, work, stem, span(), label, has_video)
                 result.outputs.append(out)
                 done += 1
-            if job.extract_audio:
+            # 영상이 없는 파일은 위에서 이미 소리 파일로 저장했으므로 한 번 더 추출하지 않는다
+            if job.extract_audio and not (job.save_video and not all(p.media.has_video for p in group)):
                 if not any(p.media.has_audio for p in group):
                     result.notes.append(f"{stem}: 소리가 없어 추출하지 못했습니다")
                 else:
-                    result.outputs.append(_extract(job, ffmpeg, runner, s, group, work, stem, span(), label))
+                    actual = [snapped.get(id(p), p) for p in group] if job.mode == "fast" else group
+                    result.outputs.append(_extract(job, ffmpeg, runner, s, actual, work, stem, span(), label))
                 done += 1
             if job.save_timestamps:
-                result.outputs.append(_timestamps(job, group, stem))
+                actual = [snapped.get(id(p), p) for p in group] if job.mode == "fast" else group
+                result.outputs.append(_timestamps(job, actual, stem, s.speed if job.mode == "encode" else 1.0))
         if progress:
             progress(1.0, "완료")
         return result
     finally:
         shutil.rmtree(work, ignore_errors=True)
-        # 실패·취소로 남은 임시 결과 파일 정리
-        for leftover in job.output_dir.glob(f".{base}{job.suffix}*.vcam-tmp*"):
+        # 실패·취소로 남은 이 작업의 임시 결과 파일만 정리(다른 작업·사용자 파일은 건드리지 않음)
+        for leftover in job.output_dir.glob(f".*{tmp_tag}*"):
             leftover.unlink(missing_ok=True)
+        _TAGS.pop(id(job), None)
 
 
 def _snap(job: EditJob, ffmpeg: FfmpegPaths, result: JobResult) -> dict[int, Piece]:
     snapped: dict[int, Piece] = {}
     cache: dict[Path, list[float]] = {}
+    prev: Piece | None = None
     for p in job.pieces:
-        if not p.media.has_video or p.segment.start <= 0:
-            continue
-        keys = cache.setdefault(p.media.path, keyframes(ffmpeg, p.media.path))
-        seg = snap_to_keyframes([p.segment], keys)[0]
-        if seg.start < p.segment.start - 0.02:
-            result.notes.append(f"빠른 모드: {format_time(p.segment.start)} → {format_time(seg.start)} (키프레임)에서 시작")
-        snapped[id(p)] = Piece(p.media, seg)
+        cur = p
+        if p.media.has_video and p.segment.start > 0:
+            keys = cache.setdefault(p.media.path, keyframes(ffmpeg, p.media.path, start_time=p.media.start_time))
+            seg = snap_to_keyframes([p.segment], keys)[0]
+            if seg.start < p.segment.start - 0.02:
+                result.notes.append(f"빠른 모드: {format_time(p.segment.start)} → {format_time(seg.start)} (키프레임)에서 시작")
+            cur = Piece(p.media, seg)
+            snapped[id(p)] = cur
+        # 나누기처럼 이어진 구간은 앞 조각의 끝을 이 조각의 (키프레임에 맞춘) 시작으로 옮겨 겹치거나 빠지지 않게 한다.
+        if prev is not None and prev.media.path == p.media.path and abs(prev.segment.end - p.segment.start) < 1e-3:
+            before = snapped.get(id(prev), prev)
+            end = max(before.segment.start, cur.segment.start)
+            snapped[id(prev)] = Piece(before.media, Segment(before.segment.start, end))
+        prev = p
     return snapped
+
+
+def concat_escape(path: Path) -> str:
+    """concat 목록 파일 형식: 작은따옴표는 '\\'' 로 바꿔 쓴다."""
+    return path.as_posix().replace("'", "'\\''")
 
 
 def _copy_args(p: Piece, out: Path, remove_audio: bool) -> list[str]:
@@ -355,7 +398,7 @@ def _copy_args(p: Piece, out: Path, remove_audio: bool) -> list[str]:
 def _fast(job: EditJob, ffmpeg: FfmpegPaths, runner: Runner, group: list[Piece], work: Path, stem: str,
           span: tuple[float, float], label: str) -> Path:  # fmt: skip
     ext = group[0].media.path.suffix.lower() or ".mp4"
-    tmp = job.output_dir / f".{stem}.vcam-tmp{ext}"
+    tmp = job.output_dir / f".{stem}.{job_tag(job)}{ext}"
     total = sum(p.segment.duration for p in group)
     title = f"빠른 저장 {label}".strip()
     if len(group) == 1:
@@ -370,7 +413,7 @@ def _fast(job: EditJob, ffmpeg: FfmpegPaths, runner: Runner, group: list[Piece],
             runner.run(_copy_args(p, part, job.remove_audio), p.segment.duration, title, (a, b))
             parts.append(part)
         listing = work / "concat.txt"
-        listing.write_text("".join(f"file '{pp.as_posix()}'\n" for pp in parts), encoding="utf-8")
+        listing.write_text("".join(f"file '{concat_escape(pp)}'\n" for pp in parts), encoding="utf-8")
         runner.run(["-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0", "-c", "copy", str(tmp)],
                    total, title, (lo + (hi - lo) * 0.9, hi))  # fmt: skip
     return _finalize(ffmpeg, tmp, job.output_dir, stem, ext, group[0].media.has_video)
@@ -378,16 +421,17 @@ def _fast(job: EditJob, ffmpeg: FfmpegPaths, runner: Runner, group: list[Piece],
 
 def _encode(job: EditJob, ffmpeg: FfmpegPaths, runner: Runner, s: EncodeSettings, group: list[Piece], work: Path,
             stem: str, span: tuple[float, float], label: str, has_video: bool) -> Path:  # fmt: skip
-    if not has_video:  # 소리 파일 편집: 소리 형식으로 저장
-        fmt = job.extract_audio or "mp3"
+    if not has_video:  # 소리 파일 편집: 원본과 같은 소리 형식으로 저장(모르는 형식이면 MP3)
+        src_ext = group[0].media.path.suffix.lower()
+        fmt = job.extract_audio or next((k for k, (_l, e, _c) in AUDIO_FORMATS.items() if e == src_ext), "mp3")
         _lbl, ext, codec = AUDIO_FORMATS[fmt]
         graph = build_graph(group, s, want_video=False, want_audio=True)
-        tmp = job.output_dir / f".{stem}.vcam-tmp{ext}"
+        tmp = job.output_dir / f".{stem}.{job_tag(job)}{ext}"
         runner.run(encode_args(ffmpeg, graph, s, tmp, audio_only_codec=codec), graph.duration, f"인코딩 {label}".strip(), span)
         return _finalize(ffmpeg, tmp, job.output_dir, stem, ext, False)
     container = CONTAINERS[s.container]
     graph = build_graph(group, s, want_video=True, want_audio=not job.remove_audio and bool(container.audio))
-    tmp = job.output_dir / f".{stem}.vcam-tmp{container.ext}"
+    tmp = job.output_dir / f".{stem}.{job_tag(job)}{container.ext}"
     try:
         args = encode_args(ffmpeg, graph, s, tmp)
     except ValueError as exc:
@@ -401,17 +445,17 @@ def _extract(job: EditJob, ffmpeg: FfmpegPaths, runner: Runner, s: EncodeSetting
     _lbl, ext, codec = AUDIO_FORMATS[job.extract_audio or "mp3"]
     audio_settings = s if job.mode == "encode" else EncodeSettings(audio_bitrate_kbps=s.audio_bitrate_kbps)
     graph = build_graph(group, audio_settings, want_video=False, want_audio=True)
-    tmp = job.output_dir / f".{stem}.vcam-tmp{ext}"
+    tmp = job.output_dir / f".{stem}.{job_tag(job)}{ext}"
     runner.run(encode_args(ffmpeg, graph, audio_settings, tmp, audio_only_codec=codec), graph.duration,
                f"소리 추출 {label}".strip(), span)  # fmt: skip
     return _finalize(ffmpeg, tmp, job.output_dir, stem, ext, False)
 
 
-def _timestamps(job: EditJob, group: list[Piece], stem: str) -> Path:
+def _timestamps(job: EditJob, group: list[Piece], stem: str, speed: float) -> Path:
     lines, pos = [], 0.0
     for p in group:
         lines.append(f"{format_time(pos)}\t{p.media.path.name}\t{format_time(p.segment.start)} ~ {format_time(p.segment.end)}")
-        pos += p.segment.duration / (job.encode.speed if job.mode == "encode" else 1.0)
+        pos += p.segment.duration / (speed or 1.0)
     path = unique_path(job.output_dir, f"{stem}_타임스탬프", ".txt")
     path.write_text("결과 위치\t원본 파일\t원본 구간\n" + "\n".join(lines) + "\n", encoding="utf-8-sig")
     return path
@@ -419,10 +463,15 @@ def _timestamps(job: EditJob, group: list[Piece], stem: str) -> Path:
 
 def capture_frame(ffmpeg: FfmpegPaths, media: MediaFile, at: float, output_dir: Path) -> Path:
     """현재 프레임을 원본 화질 PNG로 저장한다."""
+    output_dir.mkdir(parents=True, exist_ok=True)
     out = unique_path(output_dir, f"{media.path.stem}_{format_time(at).replace(':', '-')}", ".png")
     cmd = [str(ffmpeg.ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{at:.6f}", "-i", str(media.path),
            "-frames:v", "1", str(out)]  # fmt: skip
-    r = subprocess.run(cmd, capture_output=True, text=True, creationflags=CREATE_NO_WINDOW, timeout=60)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=CREATE_NO_WINDOW, timeout=60,
+                           encoding="utf-8", errors="replace")  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EditError(f"프레임을 저장하지 못했습니다: {exc}") from exc
     if r.returncode != 0 or not out.exists():
         raise EditError(f"프레임을 저장하지 못했습니다: {r.stderr.strip()[:200]}")
     return out

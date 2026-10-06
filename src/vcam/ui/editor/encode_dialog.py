@@ -88,7 +88,8 @@ class EncodeDialog(QDialog):
         # 영상
         self.container = QComboBox()
         for c in CONTAINERS.values():
-            if any(v in video_ok for v in c.video):
+            # 영상 코덱과(소리를 담는 형식이면) 소리 코덱이 하나라도 있어야 고를 수 있다
+            if any(v in video_ok for v in c.video) and (not c.audio or any(a in audio_ok for a in c.audio)):
                 self.container.addItem(f"{c.label}  ({c.ext})", c.key)
         self.container.currentIndexChanged.connect(self._on_container)
         self.vcodec = QComboBox()
@@ -197,7 +198,7 @@ class EncodeDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("확인")
         buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("role", "primary")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 16)
@@ -207,6 +208,12 @@ class EncodeDialog(QDialog):
         layout.addWidget(egroup)
         layout.addWidget(buttons)
         self.load(settings)
+
+    def _accept(self) -> None:
+        if self.vcodec.currentData() is None or (self.agroup.isEnabled() and self.acodec.currentData() is None):
+            QMessageBox.warning(self, "인코딩 설정", "이 형식에 쓸 수 있는 코덱이 설치된 FFmpeg에 없습니다. 다른 형식을 골라 주세요.")
+            return
+        self.accept()
 
     # ── 값 넣기/빼기 ──────────────────────────────────────────────────────
     def load(self, s: EncodeSettings) -> None:
@@ -305,6 +312,10 @@ class EncodeDialog(QDialog):
         kind, name = data
         s = BUILTIN_PRESETS.get(name) if kind == "builtin" else load_user_presets().get(name)
         if s:
+            s = s.fixed()
+            if s.video_codec not in self._video_ok or (CONTAINERS[s.container].audio and s.audio_codec not in self._audio_ok):
+                QMessageBox.information(self, "프리셋", "설치된 FFmpeg에 이 프리셋의 코덱이 없어 적용할 수 없습니다.")
+                return
             self.load(s)
 
     def _save_preset(self) -> None:

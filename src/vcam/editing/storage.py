@@ -90,6 +90,9 @@ class ProjectFile:
     @classmethod
     def load(cls, path: Path) -> ProjectFile:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("vCAM 편집 프로젝트 파일이 아닙니다")
+        data = {k: v for k, v in data.items() if v is not None}
         return cls(
             files=[Path(f) for f in data.get("files", [])],
             segments={k: [Segment(float(a), float(b)) for a, b in v] for k, v in data.get("segments", {}).items()},

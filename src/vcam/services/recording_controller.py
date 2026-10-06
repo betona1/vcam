@@ -71,6 +71,8 @@ class RecordingController(QObject):
         self.audio = audio or AudioService()
         self._tracks: list[AudioTrack] = []
         self._audio_status: dict[str, WorkerStatus | None] = {}
+        self._finalize_thread: threading.Thread | None = None
+        self._prepare_gen = 0
         self.machine = StateMachine()
         self.machine.add_listener(lambda _p, new, _c: self.state_changed.emit(new))
         self.source: CaptureSource | None = None
@@ -105,7 +107,10 @@ class RecordingController(QObject):
 
     @property
     def current_session_dir(self) -> Path | None:
-        return self._paths.directory if self._paths else None
+        """녹화 중이거나 준비 중인 세션 폴더(복구 검사에서 제외해야 한다)."""
+        if self._paths:
+            return self._paths.directory
+        return self._prepared["dir"] if self._prepared else None
 
     def update_settings(self, settings: Settings) -> None:
         self.settings = settings
@@ -199,7 +204,8 @@ class RecordingController(QObject):
         self._prepared = None
         self._fire(Command.START)
         self._countdown_left = max(0, int(self.settings.countdown_s))
-        threading.Thread(target=self._prepare, name="vcam-prepare", daemon=True).start()
+        self._prepare_gen += 1
+        threading.Thread(target=self._prepare, args=(self._prepare_gen,), name="vcam-prepare", daemon=True).start()
         if self._countdown_left > 0:
             self.countdown_tick.emit(self._countdown_left)
             self._countdown_timer.start()
@@ -222,8 +228,12 @@ class RecordingController(QObject):
         if self._pipeline is None or not self._fire(Command.STOP):
             return
         self._metrics_timer.stop()
-        pipeline = self._pipeline
-        threading.Thread(target=self._finalize, args=(pipeline, False), name="vcam-finalize", daemon=True).start()
+        self._start_finalize(self._pipeline, recovering=False)
+
+    def _start_finalize(self, pipeline: RecordingPipeline, recovering: bool) -> None:
+        self._finalize_thread = threading.Thread(target=self._finalize_safe, args=(pipeline, recovering),
+                                                 name="vcam-recover" if recovering else "vcam-finalize", daemon=True)  # fmt: skip
+        self._finalize_thread.start()
 
     # ── 준비 ────────────────────────────────────────────────────────────────
     def _preflight(self) -> UserFacingError | None:
@@ -237,9 +247,11 @@ class RecordingController(QObject):
             return UserFacingError("output_not_writable", "저장 폴더에 쓸 수 없습니다. 다른 저장 폴더를 선택해 주세요.")
         if free_bytes(out) < MIN_START_FREE_BYTES:
             return UserFacingError("disk_low", "저장 폴더의 여유 공간이 1GB 미만입니다. 공간을 확보한 뒤 녹화해 주세요.")
+        if free_bytes(sessions_dir()) < MIN_START_FREE_BYTES:
+            return UserFacingError("disk_low", "녹화 임시 파일을 저장할 C 드라이브(%LOCALAPPDATA%)의 여유 공간이 1GB 미만입니다.")
         return None
 
-    def _prepare(self) -> None:
+    def _prepare(self, gen: int) -> None:
         """작업 스레드: 인코더 선택과 세션 폴더 준비."""
         try:
             ffmpeg = find_ffmpeg(self.settings.ffmpeg_path)
@@ -254,7 +266,7 @@ class RecordingController(QObject):
             session_dir = sessions_dir() / new_session_id()
             session_dir.mkdir(parents=True)
             self._bridge.prepared.emit(
-                {"ffmpeg": ffmpeg, "encoder": selection.key, "dir": session_dir, "audio_failed": audio_failed}
+                {"ffmpeg": ffmpeg, "encoder": selection.key, "dir": session_dir, "audio_failed": audio_failed, "gen": gen}
             )
         except Exception as exc:  # noqa: BLE001 - 스레드 최상위
             log.exception("녹화 준비 실패")
@@ -262,7 +274,8 @@ class RecordingController(QObject):
 
     @Slot(object)
     def _on_prepared(self, result: object) -> None:
-        if self.state is not RecordingState.COUNTDOWN:
+        stale = isinstance(result, dict) and result.get("gen") != self._prepare_gen
+        if self.state is not RecordingState.COUNTDOWN or stale:
             if isinstance(result, dict):
                 shutil.rmtree(result["dir"], ignore_errors=True)
             return
@@ -288,6 +301,22 @@ class RecordingController(QObject):
         # 준비가 늦으면 _on_prepared에서 시작한다.
 
     def _begin_recording(self) -> None:
+        try:
+            self._begin_recording_inner()
+        except Exception as exc:  # noqa: BLE001 - 슬롯 안: 상태가 COUNTDOWN에 멈추지 않게 정리
+            log.exception("녹화 시작 실패")
+            self._countdown_timer.stop()
+            self.audio.abort_recording()
+            self._pipeline = None
+            if self._paths:
+                shutil.rmtree(self._paths.directory, ignore_errors=True)
+            self._paths = None
+            self._prepared = None
+            if self.state is RecordingState.COUNTDOWN:
+                self._fire(Command.CANCEL)
+            self.error_raised.emit(UserFacingError("start_failed", "녹화를 시작하지 못했습니다. 다시 시도해 주세요.", repr(exc)))
+
+    def _begin_recording_inner(self) -> None:
         prepared, source = self._prepared, self.source
         assert prepared is not None and source is not None
         paths = SessionPaths.in_dir(prepared["dir"])
@@ -343,8 +372,20 @@ class RecordingController(QObject):
             return
         self._metrics_timer.stop()
         self._fire(Command.FATAL_ERROR)
+        self._start_finalize(self._pipeline, recovering=True)
         self.error_raised.emit(error)
-        threading.Thread(target=self._finalize, args=(self._pipeline, True), name="vcam-recover", daemon=True).start()
+
+    def _finalize_safe(self, pipeline: RecordingPipeline, recovering: bool) -> None:
+        """어떤 예외가 나도 finished 신호를 보내 UI가 '저장 중'에 멈추지 않게 한다."""
+        try:
+            self._finalize(pipeline, recovering)
+        except Exception as exc:  # noqa: BLE001 - 스레드 최상위
+            log.exception("녹화 마무리 실패")
+            self._bridge.finished.emit({
+                "outcome": PipelineOutcome(0, 0, pipeline.config.encoder_key, -1, None, ()), "recovering": True, "notes": [],
+                "error": UserFacingError("save_failed", "녹화를 마무리하지 못했습니다. 원본 조각은 [도구 → 미완료 녹화 복구]에서 "
+                                         "다시 시도할 수 있습니다.", repr(exc)),
+            })  # fmt: skip
 
     def _finalize(self, pipeline: RecordingPipeline, recovering: bool) -> None:
         """작업 스레드: 파이프라인 종료 → MP4 저장. 실패하면 복구를 한 번 더 시도한다."""
@@ -355,9 +396,11 @@ class RecordingController(QObject):
         result: dict = {"outcome": outcome, "recovering": recovering or outcome.error is not None, "notes": []}
         ffmpeg: FfmpegPaths = pipeline.config.ffmpeg
         tracks = self._tracks
-        if outcome.frames_written == 0:
+        if outcome.frames_written < max(1, int(pipeline.config.fps * 0.3)):
             self.audio.abort_recording()
-            result["error"] = UserFacingError("empty", "기록된 프레임이 없어 저장할 영상이 없습니다.")
+            # 오류로 멈춘 경우에는 이미 원인을 알렸으므로 두 번째 오류 창은 띄우지 않는다
+            result["silent"] = outcome.error is not None
+            result["error"] = UserFacingError("empty", "녹화가 너무 짧아 저장할 영상이 없습니다.")
             shutil.rmtree(paths.directory, ignore_errors=True)
             self._bridge.finished.emit(result)
             return
@@ -391,11 +434,14 @@ class RecordingController(QObject):
         recovering = result["recovering"]
         self._pipeline = None
         self._paths = None
+        self._finalize_thread = None
+        self.apply_audio_settings()  # 녹화 중 바꾼 오디오 장치 설정을 이제 반영
         if self.state is RecordingState.FINALIZING:
             self._fire(Command.FAILURE if (recovering or media is None) else Command.SUCCESS)
         if media is None:
             self._fire(Command.FAILED)
-            self.error_raised.emit(result.get("error") or UserFacingError("save_failed", "녹화를 저장하지 못했습니다."))
+            if not result.get("silent"):
+                self.error_raised.emit(result.get("error") or UserFacingError("save_failed", "녹화를 저장하지 못했습니다."))
             return
         if self.state is RecordingState.RECOVERING:
             self._fire(Command.RECOVERED)
@@ -429,18 +475,22 @@ class RecordingController(QObject):
         """앱 종료 시 녹화 중이면 안전하게 마무리한다(GUI 스레드에서 블로킹)."""
         self._countdown_timer.stop()
         self._metrics_timer.stop()
-        if self._pipeline is not None and self._paths is not None:
+        if self._finalize_thread is not None and self._finalize_thread.is_alive():
+            # 이미 저장 중이면 두 번 저장하지 않고 끝나기를 기다린다
+            log.info("앱 종료: 진행 중인 저장이 끝나기를 기다립니다")
+            self._finalize_thread.join(timeout=max(timeout, 120))
+        elif self._pipeline is not None and self._paths is not None:
             log.info("앱 종료: 진행 중인 녹화를 마무리합니다")
             pipeline, paths = self._pipeline, self._paths
             self._pipeline = None
-            outcome = pipeline.stop(timeout=timeout)
-            self.audio.end_recording(outcome.frames_written / pipeline.config.fps)
             try:
+                outcome = pipeline.stop(timeout=timeout)
+                self.audio.end_recording(outcome.frames_written / pipeline.config.fps)
                 finalize_with_fallback(
                     pipeline.config.ffmpeg, paths.video_partial, Path(self.settings.output_dir), self._stem, self._tracks
                 )
                 shutil.rmtree(paths.directory, ignore_errors=True)
-            except (MuxError, ValidationError, OSError):
+            except Exception:  # noqa: BLE001 - 종료 중: 조각은 남겨 다음 실행 때 복구
                 log.exception("종료 중 저장 실패 — 다음 실행 때 복구 안내")
         self._cleanup_unused_session()
         self._audio_timer.stop()

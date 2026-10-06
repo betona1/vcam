@@ -213,8 +213,12 @@ def video_quality_args(encoder: str, s: EncodeSettings) -> list[str]:
     if s.rate_control == "cbr":
         b = f"{s.bitrate_kbps}k"
         args = ["-b:v", b, "-maxrate", b, "-bufsize", f"{s.bitrate_kbps * 2}k"]
-        if encoder == "libvpx-vp9" or encoder == "libvpx":
+        if encoder in ("libvpx-vp9", "libvpx"):
             args = ["-b:v", b, "-minrate", b, "-maxrate", b]
+        elif encoder in ("libsvtav1", "libaom-av1"):  # 이 인코더들은 maxrate/bufsize를 받지 않는다
+            args = ["-b:v", b]
+        elif encoder.endswith("_nvenc"):
+            args = ["-rc", "cbr", *args]
         return args
     if encoder in ("libx264", "libx265"):
         return ["-crf", str(round(40 - q * 25)), "-preset", "veryfast" if encoder == "libx264" else "fast"]
