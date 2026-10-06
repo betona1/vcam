@@ -152,5 +152,27 @@ def test_apply_script_replaces_files_and_cleans_up(tmp_path):
     assert "update applied" in (tmp_path / "update.log").read_text(encoding="utf-8-sig")
 
 
+def test_launch_apply_runs_independently(tmp_path):
+    """앱이 실제로 쓰는 launch_apply 경로(같은 프로세스 플래그)로 업데이트가 적용되는지 확인한다.
+    v0.2.0은 DETACHED_PROCESS 때문에 스크립트가 아예 실행되지 않았다."""
+    import time
+
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "vcam.exe").write_bytes(b"old-exe")
+    staged = tmp_path / "staged" / "vcam"
+    (staged / "_internal").mkdir(parents=True)
+    (staged / "vcam.exe").write_bytes(b"new-exe")
+    log = tmp_path / "update.log"
+    dead = subprocess.Popen(["cmd", "/c", "exit"])
+    dead.wait()
+    proc = us.launch_apply(staged, target, restart=False, wait_pid=dead.pid, log_path=log)
+    deadline = time.monotonic() + 60
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert (target / "vcam.exe").read_bytes() == b"new-exe"
+    assert "update applied" in log.read_text(encoding="utf-8-sig")
+
+
 def test_install_dir_none_in_dev():
     assert us.install_dir() is None

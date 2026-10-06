@@ -236,18 +236,27 @@ def write_apply_script() -> Path:
     return path
 
 
-def launch_apply(staged: Path, target: Path, restart: bool) -> None:
+# DETACHED_PROCESS(0x8)를 쓰면 powershell.exe가 콘솔 없이 즉시 종료되어 스크립트가 실행되지 않는다(v0.2.0 버그).
+# 숨은 콘솔을 주는 CREATE_NO_WINDOW와 새 프로세스 그룹이면 앱이 끝난 뒤에도 독립적으로 계속 실행된다.
+APPLY_CREATION_FLAGS = 0x00000200 | 0x08000000  # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+
+
+def launch_apply(
+    staged: Path, target: Path, restart: bool, *, wait_pid: int | None = None, log_path: Path | None = None
+) -> subprocess.Popen:
     """현재 프로세스가 끝나기를 기다렸다가 파일을 교체하는 스크립트를 독립 실행한다."""
     if not (staged / EXE_NAME).exists():
         raise UpdateError("준비된 업데이트 파일이 없습니다")
     if not can_write(target):
         raise UpdateError(f"설치 폴더에 쓸 수 없습니다: {target}")
     script = write_apply_script()
-    flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
-    subprocess.Popen(  # noqa: S603
+    proc = subprocess.Popen(  # noqa: S603
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-         "-File", str(script), "-ProcessId", str(os.getpid()), "-Staged", str(staged),
-         "-Target", str(target), "-Log", str(logs_dir() / "update.log"), "-Restart", "1" if restart else "0"],
-        creationflags=flags, close_fds=True,
+         "-File", str(script), "-ProcessId", str(wait_pid or os.getpid()), "-Staged", str(staged),
+         "-Target", str(target), "-Log", str(log_path or logs_dir() / "update.log"),
+         "-Restart", "1" if restart else "0"],
+        creationflags=APPLY_CREATION_FLAGS, close_fds=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )  # fmt: skip
     log.info("업데이트 적용 스크립트 실행 (재시작=%s)", restart)
+    return proc
