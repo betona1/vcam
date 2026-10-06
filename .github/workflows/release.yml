@@ -1,0 +1,44 @@
+# v로 시작하는 태그(예: v0.2.0)를 올리면 Windows 실행 파일을 빌드해 GitHub 릴리스로 배포한다.
+# 앱의 자동 업데이트는 이 릴리스의 vcam-<버전>-win64.zip 과 .sha256 을 내려받는다.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 태그와 앱 버전 확인
+        shell: pwsh
+        run: |
+          $v = python -c "import re,pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/vcam/__init__.py').read_text(encoding='utf-8')).group(1))"
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "태그 ${{ github.ref_name }} 와 앱 버전 v$v 가 다릅니다" }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: 빌드
+        shell: pwsh
+        env:
+          VCAM_PYTHON: python
+          VCAM_VENV: ${{ runner.temp }}\venv
+        run: .\scripts\build.ps1 -Dist dist
+      - name: 단위 테스트
+        shell: pwsh
+        run: '& "${{ runner.temp }}\venv\Scripts\python.exe" -m pytest -q -p no:cacheprovider tests/unit'
+      - name: 릴리스 노트
+        run: python scripts/release_notes.py ${{ env.VERSION }} > release_notes.md
+      - name: GitHub 릴리스 생성
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "dist/vcam-$env:VERSION-win64.zip" "dist/vcam-$env:VERSION-win64.zip.sha256" `
+            --title "vavelingCam ${{ github.ref_name }}" --notes-file release_notes.md
