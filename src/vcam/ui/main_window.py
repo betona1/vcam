@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         self._selector: RegionSelector | None = None
         self._was_minimized_for_recording = False
 
-        self.setWindowTitle("vavelingCam")
+        self.setWindowTitle("vCAM")
         self.setWindowIcon(QIcon(str(assets_dir() / "icons" / "vcam.ico")))
         self.resize(1100, 780)
         self.setMinimumSize(900, 680)
@@ -235,7 +235,7 @@ class MainWindow(QMainWindow):
         self._action(m_help, "녹화 동의 안내", lambda: show_consent_notice(self), "info")
         self._action(m_help, "업데이트 확인…", lambda: self.updater.check(manual=True), "refresh")
         m_help.addSeparator()
-        self._action(m_help, "vavelingCam 정보", lambda: AboutDialog(self.p, __version__, self).exec(), "info")
+        self._action(m_help, "vCAM 정보", lambda: AboutDialog(self.p, __version__, self).exec(), "info")
 
     def _tool(self, icon_name: str, tip: str, slot, color: str = "text", size: int = 20) -> QToolButton:
         b = QToolButton()
@@ -265,7 +265,7 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         logo = QLabel()
         logo.setPixmap(QIcon(str(assets_dir() / "icons" / "vcam.png")).pixmap(30, 30))
-        brand = QLabel("vavelingCam")
+        brand = QLabel("vCAM")
         brand.setProperty("role", "brand")
         top.addWidget(logo)
         top.addWidget(brand)
@@ -959,7 +959,7 @@ class MainWindow(QMainWindow):
         self._restore_window()
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("vavelingCam")
+        box.setWindowTitle("vCAM")
         box.setText(error.message)
         if error.detail:
             box.setDetailedText(error.detail)
@@ -996,7 +996,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("새 버전")
         box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"vavelingCam v{release.version}이(가) 나왔습니다. (현재 v{__version__})")
+        box.setText(f"vCAM v{release.version}이(가) 나왔습니다. (현재 v{__version__})")
         box.setInformativeText("이 실행 방식에서는 자동으로 설치할 수 없습니다. 릴리스 페이지에서 내려받아 주세요.")
         open_btn = box.addButton("릴리스 페이지 열기", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
@@ -1029,7 +1029,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self.controller.is_busy:
             answer = QMessageBox.question(
-                self, "vavelingCam 종료", "녹화가 진행 중입니다. 지금까지 녹화한 내용을 저장하고 종료할까요?"
+                self, "vCAM 종료", "녹화가 진행 중입니다. 지금까지 녹화한 내용을 저장하고 종료할까요?"
             )
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()

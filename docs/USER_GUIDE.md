@@ -1,8 +1,8 @@
-# vavelingCam 사용설명서
+# vCAM 사용설명서
 
-<img src="../assets/icons/vcam.png" width="96" align="right" alt="vavelingCam 아이콘">
+<img src="../assets/icons/vcam.png" width="96" align="right" alt="vCAM 아이콘">
 
-vavelingCam(줄여서 vcam)은 Windows 화면을 소리와 함께 MP4로 녹화하는 프로그램입니다.
+vCAM(줄여서 vcam)은 Windows 화면을 소리와 함께 MP4로 녹화하는 프로그램입니다.
 이 설명서는 설치부터 녹화, 설정, 문제 해결까지 순서대로 안내합니다.
 
 ## 목차
@@ -219,7 +219,7 @@ FPS와 품질은 메인 화면 **화질** 줄에서도 바로 바꿀 수 있습�
 | **녹화** | 녹화 시작/종료 (F9) · 일시정지 (F10) · 전체 화면 녹화 ▸ 모니터 선택 · 녹화 영역 지정… |
 | **보기** | 가이드 프레임 표시 · 테마 ▸ 시스템 설정 따르기 / 라이트 / 다크 |
 | **도구** | 시스템 진단… · 미완료 녹화 복구… · 로그 폴더 열기 · 설정… |
-| **도움말** | 사용 안내 · 사용설명서(온라인) · 녹화 동의 안내 · 업데이트 확인… · vavelingCam 정보 |
+| **도움말** | 사용 안내 · 사용설명서(온라인) · 녹화 동의 안내 · 업데이트 확인… · vCAM 정보 |
 
 ![녹화 메뉴](images/menu_record.png)
 

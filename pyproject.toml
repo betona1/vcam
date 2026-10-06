@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "vcam"
 dynamic = ["version"]
-description = "vavelingCam — 로컬 우선 Windows 화면 녹화·캡처 도구"
+description = "vCAM — 로컬 우선 Windows 화면 녹화·캡처 도구"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

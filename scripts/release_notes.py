@@ -22,7 +22,7 @@ FOOTER = """
 def section(version: str) -> str:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     match = re.search(rf"^## \[?v?{re.escape(version)}\]?.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
-    return match.group(1).strip() if match else f"vavelingCam v{version}"
+    return match.group(1).strip() if match else f"vCAM v{version}"
 
 
 def app_version() -> str:

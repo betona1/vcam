@@ -22,6 +22,7 @@ from PySide6.QtCore import QPoint, QRectF, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from vcam import __version__  # noqa: E402
 from vcam.audio.base import AudioDevice, FakeAudioSource  # noqa: E402
 from vcam.domain.models import Rect  # noqa: E402
 from vcam.encoding.ffmpeg import find_ffmpeg  # noqa: E402
@@ -34,7 +35,7 @@ from vcam.ui.widgets.guide_frame import GuideFrame  # noqa: E402
 from vcam.ui.widgets.recording_bar import RecordingBar  # noqa: E402
 from vcam.ui.widgets.region_overlay import RegionSelector, _ScreenOverlay  # noqa: E402
 
-BRAND = ROOT / "assets" / "brand" / "vaveling_lv5.jpg"
+BRAND = ROOT / "assets" / "brand" / "vaveling_glasses.jpg"
 
 
 def demo_desktop(w: int = 1920, h: int = 1080) -> QImage:
@@ -52,7 +53,7 @@ def demo_desktop(w: int = 1920, h: int = 1080) -> QImage:
     f.setPointSize(36)
     f.setBold(True)
     p.setFont(f)
-    p.drawText(QRectF(0, h * 0.05, w, 80), Qt.AlignmentFlag.AlignCenter, "vavelingCam 데모 화면")
+    p.drawText(QRectF(0, h * 0.05, w, 80), Qt.AlignmentFlag.AlignCenter, "vCAM 데모 화면")
     p.end()
     return img
 
@@ -122,6 +123,7 @@ def main() -> int:
             ))  # fmt: skip
             w.output_label.setText(r"C:\Users\사용자\Videos\vcam")
             w._update_meters()
+            w.statusBar().clearMessage()
             name = f"main_{theme}.png"
             w.grab().save(str(OUT / name))
             results.append(name)
@@ -132,7 +134,7 @@ def main() -> int:
                 dlg = SettingsDialog(w.settings, w.p, w)
                 dlg.adjustSize()
                 dlg.grab().save(str(OUT / "settings.png"))
-                about = AboutDialog(w.p, "0.2.0", w)
+                about = AboutDialog(w.p, __version__, w)
                 about.adjustSize()
                 about.grab().save(str(OUT / "about.png"))
                 results.extend(["menu_record.png", "settings.png", "about.png"])

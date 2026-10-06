@@ -6,8 +6,8 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QObject, QSize, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,8 +42,20 @@ ASSETS = assets_dir()
 CONSENT_TEXT = (
     "다른 사람의 대화나 화상 회의를 녹화하거나 녹음할 때는 상대방의 동의가 필요할 수 있습니다.\n"
     "녹화 전에 참여자에게 알리고, 저작권이 있는 콘텐츠는 허용된 범위에서만 녹화해 주세요.\n\n"
-    "vavelingCam은 녹화한 화면과 소리를 사용자 PC 밖으로 보내지 않습니다."
+    "vCAM은 녹화한 화면과 소리를 사용자 PC 밖으로 보내지 않습니다."
 )
+
+VAVELING_URL = "https://vaveling.app"
+
+ABOUT_TEXT = f"""
+<p style="font-size:11pt"><b>중국어, 베이블링과 함께 시작하세요!</b></p>
+<p>vCAM은 중국어 학습 앱 <b>베이블링</b>이 만든 무료 화면 녹화 프로그램입니다.<br>
+캐릭터 베이블링과 함께 즐겁게 중국어를 배워 보세요.</p>
+<p>👉 <a href="{VAVELING_URL}"><b>vaveling.app</b></a></p>
+<hr>
+<p style="color:gray">녹화 전 안내: 다른 사람의 대화나 화상 회의를 녹화하거나 녹음할 때는 상대방의 동의가 필요할 수 있습니다.
+vCAM은 녹화한 화면과 소리를 사용자 PC 밖으로 보내지 않습니다.</p>
+"""
 
 HELP_TEXT = """<h3>빠른 사용법</h3>
 <ol>
@@ -362,20 +374,18 @@ class RecoveryDialog(QDialog):
 class AboutDialog(QDialog):
     def __init__(self, palette_tokens: Palette, version: str, parent: QWidget | None = None, help_mode: bool = False) -> None:
         super().__init__(parent)
-        self.setWindowTitle("사용 안내" if help_mode else "vavelingCam 정보")
+        self.setWindowTitle("사용 안내" if help_mode else "vCAM 정보")
         self.setMinimumWidth(600)
         art = QLabel()
-        pm = QPixmap(str(ASSETS / "brand" / "vaveling_lv5.jpg"))
+        pm = QPixmap(str(ASSETS / "brand" / "vaveling_glasses.jpg"))
         if not pm.isNull():
             art.setPixmap(pm.scaledToHeight(300, Qt.TransformationMode.SmoothTransformation))
         art.setAlignment(Qt.AlignmentFlag.AlignTop)
-        title = QLabel("vavelingCam")
+        title = QLabel("vCAM")
         title.setProperty("role", "title")
-        sub = QLabel(f"vcam {version}  ·  로컬 우선 Windows 화면 녹화")
+        sub = QLabel(f"버전 {version}  ·  로컬 우선 Windows 화면 녹화")
         sub.setProperty("role", "muted")
-        body = QLabel(HELP_TEXT if help_mode else
-                      "<p>바브링 5단계 <b>초초사이언 바브</b>와 함께하는 화면 녹화 도구입니다.</p>"
-                      f"<p>{CONSENT_TEXT.replace(chr(10), '<br>')}</p>")  # fmt: skip
+        body = QLabel(HELP_TEXT if help_mode else ABOUT_TEXT)
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
         text = QVBoxLayout()
@@ -387,13 +397,23 @@ class AboutDialog(QDialog):
         row.addWidget(art)
         row.addSpacing(16)
         row.addLayout(text, 1)
+        body.setOpenExternalLinks(True)
         ok = QPushButton("확인")
-        ok.setProperty("role", "primary")
         ok.clicked.connect(self.accept)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        if not help_mode:
+            visit = QPushButton("vaveling.app 방문하기")
+            visit.setProperty("role", "primary")
+            visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(VAVELING_URL)))
+            buttons.addWidget(visit)
+        else:
+            ok.setProperty("role", "primary")
+        buttons.addWidget(ok)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 16)
         layout.addLayout(row)
-        layout.addWidget(ok, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(buttons)
 
 
 def show_consent_notice(parent: QWidget) -> None:

@@ -41,4 +41,4 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" `
             "dist/vcam-$env:VERSION-win64.zip" "dist/vcam-$env:VERSION-win64.zip.sha256" `
-            --title "vavelingCam ${{ github.ref_name }}" --notes-file release_notes.md
+            --title "vCAM ${{ github.ref_name }}" --notes-file release_notes.md
