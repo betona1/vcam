@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 
-from PySide6.QtCore import QLockFile, Qt
+from PySide6.QtCore import QLibraryInfo, QLockFile, Qt, QTranslator
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -38,6 +38,10 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationVersion(__version__)
     app.setOrganizationName("vaveling")
     app.setWindowIcon(QIcon(str(assets_dir() / "icons" / "vcam.ico")))
+    # Qt 기본 버튼(Show Details…, Yes/No 등)을 한국어로
+    translator = QTranslator(app)
+    if translator.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(translator)
 
     lock = QLockFile(str(app_data_dir() / "vcam.lock"))
     lock.setStaleLockTime(0)
