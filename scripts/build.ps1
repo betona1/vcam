@@ -8,6 +8,8 @@ if (-not $Dist) {
     $onNetwork = ([System.IO.DriveInfo]::new($Root)).DriveType -eq "Network"
     $Dist = if ($onNetwork) { Join-Path $env:LOCALAPPDATA "vcam-dev\dist" } else { Join-Path $Root "dist" }
 }
+if (-not [System.IO.Path]::IsPathRooted($Dist)) { $Dist = Join-Path $Root $Dist }
+$Dist = [System.IO.Path]::GetFullPath($Dist)
 $Work = Join-Path (Split-Path $Dist) "build"
 Push-Location $Root
 try {
