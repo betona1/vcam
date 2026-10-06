@@ -176,7 +176,68 @@ def main() -> int:
         crop = QRectF(800, 900, bar.width() + 80, bar.height() + 40).toRect()
         compose(desktop, bar.grab(), QPoint(crop.x() + 40, crop.y() + 20)).copy(crop).save(str(OUT / "recording_bar.png"))
         results.extend(["region_select.png", "guide_frame.png", "guide_frame_rec.png", "recording_bar.png"])
-        app.quit()
+        shoot_editor()
+
+    def shoot_editor() -> None:
+        """편집기: 데모 영상으로 자르기·나누기 화면과 인코딩 설정 창을 찍는다."""
+        from PySide6.QtWidgets import QLabel
+
+        from vcam.editing.formats import (
+            EncodeSettings,
+            available_audio_codecs,
+            available_video_codecs,
+        )
+        from vcam.editing.segments import Segment
+        from vcam.ui.editor.editor_window import EditorWindow
+        from vcam.ui.editor.encode_dialog import EncodeDialog
+
+        palette = apply_theme(app, "dark")
+        demo = sorted(out_dir.glob("*.mp4"))
+        w = EditorWindow(palette, find_ffmpeg)
+        w.resize(1320, 820)
+        w.move(-6000, -6000)
+        w.show()
+        w.open_files(demo)
+        # 화면 밖 캡처는 동영상 표면을 찍지 못하므로 정지 화면으로 대신한다
+        still = QLabel(w.player)
+        still.setPixmap(QPixmap.fromImage(desktop).scaled(w.player.video.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                                          Qt.TransformationMode.SmoothTransformation))  # fmt: skip
+        still.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        still.setStyleSheet("background:#000;")
+
+        def setup() -> None:
+            w.file_list.setCurrentRow(1 if len(demo) > 1 else 0)
+            m = w.current
+            if m:
+                w.segments[m.path] = [Segment(m.duration * 0.12, m.duration * 0.33), Segment(m.duration * 0.5, m.duration * 0.74)]
+                w.sel_in, w.sel_out = m.duration * 0.8, m.duration * 0.9
+                w.player.seek(m.duration * 0.2)
+                w.player._flush_seek()
+            w._select_tool("cut")
+            QTimer.singleShot(800, lambda: snap("editor_cut.png", lambda: (w._select_tool("split"), w.split_equal.setChecked(True),
+                                                                           w.split_count.setValue(3),
+                                                                           QTimer.singleShot(500, lambda: snap("editor_split.png", finish)))))  # fmt: skip
+
+        def snap(name: str, then) -> None:
+            still.setGeometry(w.player.video.geometry())
+            still.show()
+            still.raise_()
+            w.grab().save(str(OUT / name))
+            results.append(name)
+            then()
+
+        def finish() -> None:
+            ff = find_ffmpeg()
+            dlg = EncodeDialog(EncodeSettings(container="mkv", video_codec="hevc", resolution="preset", width=1280, height=720,
+                                              speed=1.5, normalize=True),
+                               available_video_codecs(ff), available_audio_codecs(ff), w)  # fmt: skip
+            dlg.adjustSize()
+            dlg.grab().save(str(OUT / "encode_settings.png"))
+            results.append("encode_settings.png")
+            w.close()
+            app.quit()
+
+        QTimer.singleShot(2500, setup)
 
     shoot_main("dark", lambda: shoot_main("light", shoot_overlays))
     app.exec()

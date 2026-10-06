@@ -34,6 +34,7 @@ def reveal_in_explorer(path: Path) -> None:
 
 class RecentRecordings(QListWidget):
     count_changed = Signal(int)
+    edit_requested = Signal(object)  # Path
 
     def __init__(self, palette_tokens: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -114,6 +115,7 @@ class RecentRecordings(QListWidget):
         menu = QMenu(self)
         menu.addAction(icons.icon("play", self.p.text), "재생", lambda: self.play(item))
         menu.addAction(icons.icon("folder", self.p.text), "폴더에서 보기", lambda: reveal_in_explorer(path))
+        menu.addAction(icons.icon("scissors", self.p.text), "편집기에서 열기 (자르기·변환…)", lambda: self.edit_requested.emit(path))
         menu.addSeparator()
         menu.addAction(icons.icon("trash", self.p.rec), "휴지통으로 이동…", lambda: self.trash(item))
         menu.exec(self.viewport().mapToGlobal(pos))

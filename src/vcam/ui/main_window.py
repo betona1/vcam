@@ -64,6 +64,7 @@ from vcam.ui.dialogs import (
     SettingsDialog,
     show_consent_notice,
 )
+from vcam.ui.editor.editor_window import EditorWindow
 from vcam.ui.theme import apply_theme
 from vcam.ui.tokens import Palette
 from vcam.ui.updater import PreparedUpdate, Updater
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self.controller = RecordingController(settings, self)
         self._themed: list[tuple[object, str, str]] = []  # (위젯/액션, 아이콘 이름, 색 토큰)
         self._last_result: RecordingResult | None = None
+        self.editor: EditorWindow | None = None
         self._selector: RegionSelector | None = None
         self._was_minimized_for_recording = False
 
@@ -223,6 +225,9 @@ class MainWindow(QMainWindow):
             m_theme.addAction(a)
 
         m_tools = mb.addMenu("도구(&T)")
+        act_edit = self._action(m_tools, "동영상 편집기 (자르기·합치기·변환)…", lambda: self.open_editor(), "scissors", "Ctrl+E")
+        act_edit.setShortcut("Ctrl+E")
+        m_tools.addSeparator()
         self._action(m_tools, "시스템 진단…", self.open_diagnostics, "pulse")
         self._action(m_tools, "미완료 녹화 복구…", lambda: self.open_recovery(manual=True), "lifebuoy")
         self._action(m_tools, "로그 폴더 열기", lambda: os.startfile(logs_dir()), "log")  # noqa: S606
@@ -278,6 +283,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.mode_display)
         top.addWidget(self.mode_region)
         top.addStretch(1)
+        edit_btn = self._tool("scissors", "동영상 편집기 (Ctrl+E)", lambda: self.open_editor())
+        edit_btn.setText("편집기")
+        edit_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        top.addWidget(edit_btn)
         top.addWidget(self._tool("pulse", "시스템 진단", self.open_diagnostics))
         top.addWidget(self._tool("settings", "설정", self.open_settings))
         top.addWidget(self._tool("help", "사용 안내", lambda: AboutDialog(self.p, __version__, self, help_mode=True).exec()))
@@ -381,12 +390,15 @@ class MainWindow(QMainWindow):
         rh.addWidget(self.recent_count)
         rh.addStretch(1)
         rh.addWidget(self._tool("play", "재생", lambda: self.recent.play(), size=18))
+        rh.addWidget(self._tool("scissors", "선택한 녹화를 편집기에서 열기",
+                                lambda: self.open_editor([self.recent.selected_path()] if self.recent.selected_path() else None), size=18))
         rh.addWidget(self._tool("folder", "폴더에서 보기", self._reveal_selected, size=18))
         rh.addWidget(self._tool("trash", "휴지통으로 이동", lambda: self.recent.trash(), size=18))
         rh.addWidget(self._tool("refresh", "새로 고침", self.refresh_recent, size=18))
         recent_layout.addLayout(rh)
         self.recent = RecentRecordings(self.p)
         self.recent.count_changed.connect(lambda n: self.recent_count.setText(str(n)))
+        self.recent.edit_requested.connect(lambda path: self.open_editor([path]))
         recent_layout.addWidget(self.recent)
         outer.addWidget(recent_card, 2)
 
@@ -402,12 +414,14 @@ class MainWindow(QMainWindow):
         self.result_label = QLabel("")
         self.result_play = self._tool("play", "방금 녹화한 파일 재생", self._play_last, size=18)
         self.result_folder = self._tool("folder", "방금 녹화한 파일 위치 열기", self._reveal_last, size=18)
+        self.result_edit = self._tool("scissors", "방금 녹화한 파일 편집", lambda: self.open_editor([self._last_result.path] if self._last_result else None), size=18)
         bl.addWidget(self.timer_label)
         bl.addSpacing(12)
         bl.addWidget(self.metrics_label)
         bl.addWidget(self.result_label)
         bl.addWidget(self.result_play)
         bl.addWidget(self.result_folder)
+        bl.addWidget(self.result_edit)
         bl.addStretch(1)
         hint = QLabel("F9 시작/종료 · F10 일시정지")
         hint.setProperty("role", "muted")
@@ -478,6 +492,8 @@ class MainWindow(QMainWindow):
         for w in (self.preview, self.recent, self.guide, *self.meters.values()):
             w.set_palette(self.p)
         self.bar.apply_palette(self.p)
+        if self.editor is not None:
+            self.editor.set_palette(self.p)
         self.countdown.p = self.p
         self._apply_icons()
 
@@ -884,6 +900,7 @@ class MainWindow(QMainWindow):
             self.result_label.setText("")
             self.result_play.hide()
             self.result_folder.hide()
+            self.result_edit.hide()
 
     def _update_state_widgets(self, state: RecordingState) -> None:
         text, icon_name, color_key = STATE_TEXT[state]
@@ -950,6 +967,7 @@ class MainWindow(QMainWindow):
         self.result_label.setText(f"저장됨{note}: {result.path.name}  ·  {format_duration(info.duration_s)}  ·  {format_bytes(info.size_bytes)}")
         self.result_play.show()
         self.result_folder.show()
+        self.result_edit.show()
         self.metrics_label.setText(f"드롭 {result.frames_dropped}" if result.frames_dropped else "")
         self.statusBar().showMessage(f"녹화를 저장했습니다: {result.path}", 10000)
         self.refresh_recent()
@@ -986,6 +1004,17 @@ class MainWindow(QMainWindow):
             self.controller.toggle_start_stop()
         elif name == "pause":
             self.controller.toggle_pause()
+
+    # ── 편집기 ─────────────────────────────────────────────────────────────
+    def open_editor(self, paths: list[Path] | None = None) -> None:
+        if self.editor is None:
+            self.editor = EditorWindow(self.p, lambda: find_ffmpeg(self.settings.ffmpeg_path))
+            self.editor.setWindowIcon(self.windowIcon())
+        self.editor.showNormal()
+        self.editor.raise_()
+        self.editor.activateWindow()
+        if paths:
+            self.editor.open_files([p for p in paths if p])
 
     # ── 업데이트 ───────────────────────────────────────────────────────────
     def open_manual(self) -> None:
@@ -1043,6 +1072,8 @@ class MainWindow(QMainWindow):
         self.sampler.shutdown()
         for w in (self.guide, self.bar, self.countdown):
             w.close()
+        if self.editor is not None:
+            self.editor.close()
         if self._apply_update_on_exit is not None:
             try:
                 self.updater.apply(self._apply_update_on_exit, restart=self._restart_after_update)
