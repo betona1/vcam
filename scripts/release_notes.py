@@ -1,4 +1,8 @@
-"""CHANGELOG.md에서 해당 버전 절을 뽑아 릴리스 노트로 출력한다.  사용: python scripts/release_notes.py 0.2.0"""
+"""CHANGELOG.md에서 해당 버전 절을 뽑아 릴리스 노트로 출력한다.
+
+사용: python scripts/release_notes.py 0.2.0
+      python scripts/release_notes.py --app-version   (src/vcam/__init__.py의 버전 출력)
+"""
 
 from __future__ import annotations
 
@@ -21,7 +25,15 @@ def section(version: str) -> str:
     return match.group(1).strip() if match else f"vavelingCam v{version}"
 
 
+def app_version() -> str:
+    text = (ROOT / "src" / "vcam" / "__init__.py").read_text(encoding="utf-8")
+    return re.search(r'__version__ = "([^"]+)"', text).group(1)
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == "--app-version":
+        print(app_version())
+        raise SystemExit(0)
     v = sys.argv[1].lstrip("v")
     sys.stdout.reconfigure(encoding="utf-8")
     print(section(v) + "\n" + FOOTER.format(v=v))

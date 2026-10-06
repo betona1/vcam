@@ -13,14 +13,14 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: 태그와 앱 버전 확인
         shell: pwsh
         run: |
-          $v = python -c "import re,pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/vcam/__init__.py').read_text(encoding='utf-8')).group(1))"
+          $v = python scripts/release_notes.py --app-version
           if ("v$v" -ne "${{ github.ref_name }}") { throw "태그 ${{ github.ref_name }} 와 앱 버전 v$v 가 다릅니다" }
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: 빌드
