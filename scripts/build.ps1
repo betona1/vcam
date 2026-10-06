@@ -17,6 +17,7 @@ try {
         --icon "$Root\assets\icons\vcam.ico" `
         --add-data "$Root\assets;assets" `
         --add-data "$Root\THIRD_PARTY_NOTICES.md;." `
+        --add-data "$Root\LICENSE;." `
         --collect-submodules dxcam `
         --hidden-import comtypes.stream `
         --paths "$Root\src" `

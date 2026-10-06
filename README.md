@@ -109,5 +109,6 @@ python scripts\render_screenshots.py              # 문서 스크린샷 다시 �
 
 ## 라이선스와 고지
 
+소스 코드는 [MIT 라이선스](LICENSE)로 공개합니다. 자유롭게 사용·수정·배포할 수 있습니다.
+단, **바브링 캐릭터 그림**(`assets/brand/`, 앱 아이콘)은 MIT에 포함되지 않으며 저작권자에게 권리가 있습니다.
 사용한 오픈 소스 구성 요소는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 정리되어 있습니다.
-바브링 캐릭터와 아이콘의 권리는 저작권자에게 있습니다.
