@@ -79,6 +79,7 @@ from vcam.ui.editor.player import Player
 from vcam.ui.editor.timeline import Timeline
 from vcam.ui.tokens import Palette
 from vcam.ui.widgets.recent_recordings import reveal_in_explorer
+from vcam.util.paths import default_output_dir
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +119,10 @@ class _Bridge(QObject):
 
 
 class EditorWindow(QMainWindow):
+    # 저장 위치가 바뀌면 메인 창이 설정에 저장한다 (편집기는 설정 파일을 직접 다루지 않는다)
+    output_dir_changed = Signal(str)
+    same_folder_changed = Signal(bool)
+
     def __init__(self, palette_tokens: Palette, ffmpeg_lookup, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.p = palette_tokens
@@ -133,6 +138,7 @@ class EditorWindow(QMainWindow):
         self.sel_out: float | None = None
         self.tool = "cut"
         self.encode = EncodeSettings()
+        self._out_dir_known = ""
         self._cancel: threading.Event | None = None
         self._outputs: list[Path] = []
         self._themed: list[tuple[object, str, str]] = []
@@ -407,12 +413,15 @@ class EditorWindow(QMainWindow):
         ll = QVBoxLayout(loc)
         self.same_folder = QCheckBox("원본과 같은 폴더")
         self.same_folder.setChecked(True)
-        self.out_dir = QLineEdit(str(Path.home() / "Videos" / "vcam"))
-        browse = self._icon_btn("folder", "저장 폴더 선택", self._browse_out)
+        self.out_dir = QLineEdit(str(default_output_dir()))
+        self.out_dir.setToolTip("녹화 저장 폴더와 같은 설정입니다. 여기서 바꾸면 메인 화면의 저장 폴더도 바뀝니다.")
+        self.out_dir.editingFinished.connect(self._on_out_dir_edited)
+        browse = self._browse_btn = self._icon_btn("folder", "저장 폴더 선택", self._browse_out)
         drow = QHBoxLayout()
         drow.addWidget(self.out_dir, 1)
         drow.addWidget(browse)
         self.same_folder.toggled.connect(lambda on: (self.out_dir.setEnabled(not on), browse.setEnabled(not on)))
+        self.same_folder.toggled.connect(self.same_folder_changed)
         self.out_dir.setEnabled(False)
         browse.setEnabled(False)
         self.out_name = QLineEdit()
@@ -780,6 +789,26 @@ class EditorWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.out_dir.text())
         if path:
             self.out_dir.setText(path)
+            self._on_out_dir_edited()
+
+    def _on_out_dir_edited(self) -> None:
+        path = self.out_dir.text().strip()
+        if path and path != self._out_dir_known:
+            self._out_dir_known = path
+            self.output_dir_changed.emit(path)
+
+    def set_output_dir(self, path: str) -> None:
+        """메인 창의 저장 폴더 설정을 따라간다. 신호를 다시 내보내지 않는다."""
+        self._out_dir_known = path
+        if self.out_dir.text() != path:
+            self.out_dir.setText(path)
+
+    def set_same_folder(self, on: bool) -> None:
+        self.same_folder.blockSignals(True)
+        self.same_folder.setChecked(on)
+        self.same_folder.blockSignals(False)
+        self.out_dir.setEnabled(not on)
+        self._browse_btn.setEnabled(not on)
 
     # ── 실행 ───────────────────────────────────────────────────────────────
     def _segments_or_whole(self, m: MediaFile) -> list[Segment]:

@@ -33,9 +33,19 @@ log = logging.getLogger(__name__)
 
 QUEUE_BYTE_BUDGET = 256 * 1024 * 1024
 DISK_CHECK_INTERVAL_S = 5.0
+BLACK_CHECK_INTERVAL_S = 2.0
+BLACK_CONSECUTIVE = 3  # 2초 간격으로 3번 연속 검으면 알린다 (약 6초)
+BLACK_LEVEL = 16  # 0~255. 이보다 밝은 픽셀이 하나도 없으면 검은 프레임으로 본다
+BLACK_SCREEN_NOTE = "화면이 검게 기록된 구간이 있습니다. 보호된 콘텐츠(DRM)이거나 캡처가 막힌 창일 수 있습니다."
 HW_RETRY_WINDOW_NS = 2_000_000_000
 
 BackendOpener = Callable[[Rect], CaptureBackend]
+
+
+def looks_black(frame: np.ndarray, level: int = BLACK_LEVEL) -> bool:
+    """프레임이 사실상 검은지 싸게 판단한다. 32px 간격으로 샘플링하고 알파 채널은 무시한다."""
+    sample = frame[::32, ::32, :3]
+    return sample.size == 0 or int(sample.max()) < level
 WriterFactory = Callable[[str], FfmpegVideoWriter]
 
 
@@ -88,6 +98,8 @@ class RecordingPipeline:
         self._encoder = config.encoder_key
         self._error: UserFacingError | None = None
         self._notes: list[str] = []
+        self._black_streak = 0
+        self._black_screen = False
         self._fps_window: deque[int] = deque(maxlen=64)
         self._writer: FfmpegVideoWriter | None = None
         self._exit_code = -1
@@ -149,7 +161,17 @@ class RecordingPipeline:
                 frames_dropped=self._dropped,
                 measured_fps=fps,
                 encoder=self._encoder,
+                black_screen=self._black_screen,
             )
+
+    def _note_black(self, black: bool) -> None:
+        with self._lock:
+            self._black_streak = self._black_streak + 1 if black else 0
+            now = self._black_streak >= BLACK_CONSECUTIVE
+            if now and not self._black_screen and BLACK_SCREEN_NOTE not in self._notes:
+                log.warning("캡처 프레임이 %d초 이상 검습니다 (보호된 콘텐츠?)", int(BLACK_CONSECUTIVE * BLACK_CHECK_INTERVAL_S))
+                self._notes.append(BLACK_SCREEN_NOTE)
+            self._black_screen = now
 
     # ── 내부 ────────────────────────────────────────────────────────────────
     def _default_writer(self, encoder_key: str) -> FfmpegVideoWriter:
@@ -185,6 +207,7 @@ class RecordingPipeline:
             slot = 0
             last = first
             next_disk_check = time.monotonic() + DISK_CHECK_INTERVAL_S
+            next_black_check = time.monotonic() + BLACK_CHECK_INTERVAL_S
             while not self._stop.is_set():
                 if self.clock.is_paused:
                     self._stop.wait(0.02)
@@ -210,6 +233,9 @@ class RecordingPipeline:
                     with self._lock:
                         self._dropped += 1
                 slot = due + 1
+                if time.monotonic() >= next_black_check:
+                    next_black_check = time.monotonic() + BLACK_CHECK_INTERVAL_S
+                    self._note_black(looks_black(frame))
                 if time.monotonic() >= next_disk_check:
                     next_disk_check = time.monotonic() + DISK_CHECK_INTERVAL_S
                     if free_bytes(self.config.partial_path.parent) < self.config.min_free_bytes:

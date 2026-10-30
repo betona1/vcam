@@ -131,6 +131,7 @@ class RecordingMetrics:
     measured_fps: float = 0.0
     file_bytes: int = 0
     encoder: str = ""
+    black_screen: bool = False  # 최근 몇 초간 캡처 프레임이 계속 검음 (보호된 콘텐츠 등)
 
 
 @dataclass(frozen=True)

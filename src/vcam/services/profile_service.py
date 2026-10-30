@@ -35,6 +35,17 @@ class Settings:
     last_region: tuple[int, int, int, int] | None = None
     system_audio_device: str = ""  # 빈 문자열 = 기본 출력 장치
     mic_device: str = ""  # 빈 문자열 = 기본 마이크
+    editor_same_folder: bool = True  # 편집기: 결과를 원본과 같은 폴더에 저장. 끄면 output_dir 사용
+    # 자막 만들기(SRT) 마지막 선택값
+    subtitle_language: str = "auto"
+    subtitle_model: str = ""  # 빈 문자열 = 받아 둔 모델 중 자동 선택
+    subtitle_device: str = "auto"  # auto | cuda | cpu
+    subtitle_download: bool = False  # 모델이 없으면 HuggingFace에서 내려받기 허용
+    subtitle_translate: bool = False
+    subtitle_targets: tuple[str, ...] = ("ko",)
+    subtitle_online: bool = False  # 온라인 번역(Google·MyMemory) 허용 — 자막 본문이 외부로 전송됨
+    subtitle_model_dir: str = ""  # 오프라인 번역 모델 폴더
+    subtitle_max_chars: int = 45
     profile: RecordingProfile = field(default_factory=RecordingProfile)
 
     @property
@@ -74,6 +85,8 @@ def _from_dict(data: dict[str, Any]) -> Settings:
     )
     if values.get("last_region") is not None:
         values["last_region"] = tuple(int(v) for v in values["last_region"])
+    if "subtitle_targets" in values:
+        values["subtitle_targets"] = tuple(str(v) for v in (values["subtitle_targets"] or ()))
     return Settings(**values)
 
 

@@ -20,7 +20,7 @@ $Stamp = Join-Path $Venv ".vcam-deps"
 $Hash = (Get-FileHash (Join-Path $Root "pyproject.toml")).Hash
 if (-not (Test-Path $Stamp) -or (Get-Content $Stamp) -ne $Hash) {
     & $Py -m pip install -q --upgrade pip
-    & $Py -m pip install -q -e "$Root[dev]"
+    & $Py -m pip install -q -e "$Root[dev,subtitles]"
     if ($LASTEXITCODE -ne 0) { throw "의존성 설치 실패" }
     Set-Content -Path $Stamp -Value $Hash
 }

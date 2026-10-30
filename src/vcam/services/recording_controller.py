@@ -46,6 +46,11 @@ from vcam.util.paths import (
 
 log = logging.getLogger(__name__)
 
+BLACK_SCREEN_NOTICE = (
+    "캡처된 화면이 계속 검게 나옵니다. Netflix 등 보호된(DRM) 영상은 검게 기록되며 vCAM은 이를 우회하지 않습니다. "
+    "보호되지 않은 창이나 영역을 녹화하고 있는지 확인해 주세요."
+)
+
 MIN_START_FREE_BYTES = 1024**3
 
 
@@ -91,6 +96,7 @@ class RecordingController(QObject):
         self._countdown_timer.timeout.connect(self._on_countdown)
         self._metrics_timer = QTimer(self, interval=250)
         self._metrics_timer.timeout.connect(self._emit_metrics)
+        self._black_notified = False
         self._audio_timer = QTimer(self, interval=1000)
         self._audio_timer.timeout.connect(self._check_audio_status)
         self._audio_timer.start()
@@ -363,6 +369,7 @@ class RecordingController(QObject):
             self.error_raised.emit(UserFacingError("encoder", "영상 인코더를 시작하지 못했습니다.", str(exc)))
             return
         self._fire(Command.ELAPSED)
+        self._black_notified = False
         self._metrics_timer.start()
 
     # ── 마무리 ──────────────────────────────────────────────────────────────
@@ -468,8 +475,11 @@ class RecordingController(QObject):
         self.metrics_changed.emit(RecordingMetrics(
             elapsed_ns=metrics.elapsed_ns, frames_written=metrics.frames_written,
             frames_dropped=metrics.frames_dropped, measured_fps=metrics.measured_fps,
-            file_bytes=size, encoder=metrics.encoder,
+            file_bytes=size, encoder=metrics.encoder, black_screen=metrics.black_screen,
         ))  # fmt: skip
+        if metrics.black_screen and not self._black_notified:
+            self._black_notified = True
+            self.notice.emit(BLACK_SCREEN_NOTICE)
 
     def shutdown(self, timeout: float = 30.0) -> None:
         """앱 종료 시 녹화 중이면 안전하게 마무리한다(GUI 스레드에서 블로킹)."""

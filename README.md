@@ -29,6 +29,7 @@
 | 🛟 **안전한 저장** | 녹화 중 오류나 강제 종료가 나도 기록된 부분을 복구. 파일을 덮어쓰지 않음 |
 | ✂️ **동영상 편집기** | 자르기(여러 구간) · 구간 제거 · 나누기(균등·시간·직접) · 합치기 · 소리 추출(MP3 등) · 소리 제거 — **빠른 모드(무손실)** 와 **인코딩 모드(프레임 단위)** |
 | ⇄ **형식 변환** | MP4 · MKV · WebM · AVI · MOV · WMV · FLV · M4V · TS · MPEG · GIF, 코덱(H.264 · HEVC · AV1 · VP9 · Xvid…) · 크기 · FPS · 품질 · 속도 · 회전, 일괄 처리 |
+| 💬 **자막 만들기 (SRT)** | 녹화한 영상을 PC 안의 Whisper 음성 인식으로 자막 파일로. 언어 자동 감지, NVIDIA GPU 가속, 오프라인 번역(M2M100)으로 한국어·영어·일본어·중국어 등 17개 언어 자막 추가. 자막 보기·수정 창 |
 | 🔄 **자동 업데이트** | 새 버전이 나오면 자동으로 내려받아 다시 시작할 때 설치 |
 | 🌗 **라이트 / 다크 테마** | Windows 설정을 따르거나 직접 선택 |
 
@@ -59,6 +60,7 @@
 3. **F9**(또는 **● 녹화 시작**) → 3초 뒤 녹화 시작
 4. 다시 **F9** → 저장. 결과는 `동영상\vcam` 폴더와 앱 아래쪽 **최근 녹화**에 나타납니다.
 5. 자르거나 합치거나 변환하려면 **✂ 편집기**(Ctrl+E)를 엽니다.
+6. 자막이 필요하면 최근 녹화에서 영상을 오른쪽 클릭 → **자막 만들기 (SRT)…**. 처음 한 번 음성 인식 모델을 내려받으면 그 뒤로는 인터넷 없이 동작합니다.
 
 자세한 내용은 [📘 사용설명서](docs/USER_GUIDE.md)를 보세요.
 
@@ -72,6 +74,7 @@
 ## 개인정보
 
 - 화면, 소리, 파일 이름은 어디로도 보내지 않습니다. 모든 녹화와 처리는 내 PC 안에서 끝납니다.
+- 자막 음성 인식과 오프라인 번역도 PC 안에서 처리합니다. 인터넷은 사용자가 켠 경우에만 씁니다: 음성 인식 모델 내려받기(HuggingFace), 온라인 번역(Google·MyMemory, 자막 본문이 전송됨).
 - 마이크는 사용자가 켰을 때만 엽니다.
 - 다른 사람의 대화나 회의를 녹화할 때는 **상대방의 동의가 필요할 수 있습니다.**
 
@@ -89,6 +92,8 @@ python scripts\render_screenshots.py              # 문서 스크린샷 다시 �
 ```
 
 - 기술: Python 3.12+, PySide6(Qt 6), DXcam / python-mss, SoundCard(WASAPI), FFmpeg
+- 자막: faster-whisper + CTranslate2 (`pip install -e ".[dev,subtitles]"`, dev.ps1가 자동 설치). GPU 가속은 cuBLAS/cuDNN DLL을
+  `%LOCALAPPDATA%\vcam\cuda`에 두거나 `pip install -e ".[subtitles-cuda]"`. 오프라인 번역 모델(M2M100 CTranslate2 변환본)은 `%LOCALAPPDATA%\vcam\models\m2m100_418M-ct2-int8`
 - 구조: `MainWindow → RecordingController → (capture / audio / encoding / platform)` 한 방향으로만 호출합니다.
   캡처·오디오·인코딩은 작업 스레드에서 돌고, 영상과 소리는 하나의 세션 시계를 공유해 싱크를 맞춥니다.
 - 개발 지침: [`CLAUDE.md`](CLAUDE.md)

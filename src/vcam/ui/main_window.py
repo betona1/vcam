@@ -54,8 +54,11 @@ from vcam.encoding.ffmpeg import find_ffmpeg
 from vcam.platform.windows.dpi import ScreenMapper
 from vcam.platform.windows.hotkeys import HotkeyManager
 from vcam.services.profile_service import ProfileService, Settings
-from vcam.services.recording_controller import RecordingController
+from vcam.services.recording_controller import BLACK_SCREEN_NOTICE, RecordingController
+from vcam.services.recording_pipeline import BLACK_SCREEN_NOTE
 from vcam.services.recovery_service import find_incomplete_sessions
+from vcam.subtitles.pipeline import EngineCache
+from vcam.subtitles.transcriber import availability as subtitle_availability
 from vcam.ui import icons
 from vcam.ui.dialogs import (
     AboutDialog,
@@ -65,6 +68,7 @@ from vcam.ui.dialogs import (
     show_consent_notice,
 )
 from vcam.ui.editor.editor_window import EditorWindow
+from vcam.ui.subtitle_dialog import SubtitleDialog
 from vcam.ui.theme import apply_theme
 from vcam.ui.tokens import Palette
 from vcam.ui.updater import PreparedUpdate, Updater
@@ -109,6 +113,8 @@ class MainWindow(QMainWindow):
         self._themed: list[tuple[object, str, str]] = []  # (위젯/액션, 아이콘 이름, 색 토큰)
         self._last_result: RecordingResult | None = None
         self.editor: EditorWindow | None = None
+        self.subtitle_dialog: SubtitleDialog | None = None
+        self._subtitle_cache = EngineCache()  # Whisper 모델은 앱이 켜져 있는 동안 한 번만 불러온다
         self._screens_dirty = False
         self._selector: RegionSelector | None = None
         self._was_minimized_for_recording = False
@@ -228,6 +234,8 @@ class MainWindow(QMainWindow):
         m_tools = mb.addMenu("도구(&T)")
         act_edit = self._action(m_tools, "동영상 편집기 (자르기·합치기·변환)…", lambda: self.open_editor(), "scissors", "Ctrl+E")
         act_edit.setShortcut("Ctrl+E")
+        act_sub = self._action(m_tools, "자막 만들기 (SRT)…", lambda: self.open_subtitles(), "subtitles", "Ctrl+T")
+        act_sub.setShortcut("Ctrl+T")
         m_tools.addSeparator()
         self._action(m_tools, "시스템 진단…", self.open_diagnostics, "pulse")
         self._action(m_tools, "미완료 녹화 복구…", lambda: self.open_recovery(manual=True), "lifebuoy")
@@ -393,6 +401,8 @@ class MainWindow(QMainWindow):
         rh.addWidget(self._tool("play", "재생", lambda: self.recent.play(), size=18))
         rh.addWidget(self._tool("scissors", "선택한 녹화를 편집기에서 열기",
                                 lambda: self.open_editor([self.recent.selected_path()] if self.recent.selected_path() else None), size=18))
+        rh.addWidget(self._tool("subtitles", "선택한 녹화의 자막(SRT) 만들기",
+                                lambda: self.open_subtitles([self.recent.selected_path()] if self.recent.selected_path() else None), size=18))
         rh.addWidget(self._tool("folder", "폴더에서 보기", self._reveal_selected, size=18))
         rh.addWidget(self._tool("trash", "휴지통으로 이동", lambda: self.recent.trash(), size=18))
         rh.addWidget(self._tool("refresh", "새로 고침", self.refresh_recent, size=18))
@@ -400,6 +410,7 @@ class MainWindow(QMainWindow):
         self.recent = RecentRecordings(self.p)
         self.recent.count_changed.connect(lambda n: self.recent_count.setText(str(n)))
         self.recent.edit_requested.connect(lambda path: self.open_editor([path]))
+        self.recent.subtitles_requested.connect(lambda path: self.open_subtitles([path]))
         recent_layout.addWidget(self.recent)
         outer.addWidget(recent_card, 2)
 
@@ -416,6 +427,8 @@ class MainWindow(QMainWindow):
         self.result_play = self._tool("play", "방금 녹화한 파일 재생", self._play_last, size=18)
         self.result_folder = self._tool("folder", "방금 녹화한 파일 위치 열기", self._reveal_last, size=18)
         self.result_edit = self._tool("scissors", "방금 녹화한 파일 편집", lambda: self.open_editor([self._last_result.path] if self._last_result else None), size=18)
+        self.result_subtitles = self._tool("subtitles", "방금 녹화한 파일의 자막(SRT) 만들기",
+                                           lambda: self.open_subtitles([self._last_result.path] if self._last_result else None), size=18)  # fmt: skip
         bl.addWidget(self.timer_label)
         bl.addSpacing(12)
         bl.addWidget(self.metrics_label)
@@ -423,6 +436,7 @@ class MainWindow(QMainWindow):
         bl.addWidget(self.result_play)
         bl.addWidget(self.result_folder)
         bl.addWidget(self.result_edit)
+        bl.addWidget(self.result_subtitles)
         bl.addStretch(1)
         hint = QLabel("F9 시작/종료 · F10 일시정지")
         hint.setProperty("role", "muted")
@@ -773,6 +787,21 @@ class MainWindow(QMainWindow):
         self.controller.update_settings(settings)
         self.output_label.setText(settings.output_dir)
         self.output_label.setToolTip(settings.output_dir)
+        if self.editor is not None:
+            self.editor.set_output_dir(settings.output_dir)
+            self.editor.set_same_folder(settings.editor_same_folder)
+
+    @Slot(str)
+    def _on_editor_output_dir(self, path: str) -> None:
+        """편집기에서 고른 저장 폴더는 녹화 저장 폴더와 같은 설정이다."""
+        if path != self.settings.output_dir:
+            self._save_settings(replace(self.settings, output_dir=path))
+            self.refresh_recent()
+
+    @Slot(bool)
+    def _on_editor_same_folder(self, on: bool) -> None:
+        if on != self.settings.editor_same_folder:
+            self._save_settings(replace(self.settings, editor_same_folder=on))
 
     def open_settings(self) -> None:
         if self.controller.is_busy:
@@ -914,6 +943,7 @@ class MainWindow(QMainWindow):
             self.result_play.hide()
             self.result_folder.hide()
             self.result_edit.hide()
+            self.result_subtitles.hide()
 
     def _update_state_widgets(self, state: RecordingState) -> None:
         if self._screens_dirty and state in (RecordingState.READY, RecordingState.REVIEW, RecordingState.ERROR):
@@ -963,6 +993,7 @@ class MainWindow(QMainWindow):
         elapsed = format_duration(m.elapsed_ns / 1e9)
         self.timer_label.setText(elapsed)
         self.bar.set_elapsed(elapsed)
+        self.bar.set_warning("검은 화면" if m.black_screen else None, BLACK_SCREEN_NOTICE)
         if self.guide.isVisible() and self.controller.state is RecordingState.RECORDING:
             self.guide.set_status(f"REC {elapsed}")
         elif self.guide.isVisible() and self.controller.state is RecordingState.PAUSED:
@@ -983,8 +1014,18 @@ class MainWindow(QMainWindow):
         self.result_play.show()
         self.result_folder.show()
         self.result_edit.show()
-        self.metrics_label.setText(f"드롭 {result.frames_dropped}" if result.frames_dropped else "")
-        self.statusBar().showMessage(f"녹화를 저장했습니다: {result.path}", 10000)
+        self.result_subtitles.show()
+        parts = [f"드롭 {result.frames_dropped}"] if result.frames_dropped else []
+        if BLACK_SCREEN_NOTE in result.notes:
+            parts.append("⚠ 검은 화면 구간 있음")
+            self.metrics_label.setToolTip(BLACK_SCREEN_NOTICE)
+        else:
+            self.metrics_label.setToolTip("")
+        self.metrics_label.setText("  ·  ".join(parts))
+        if BLACK_SCREEN_NOTE in result.notes:
+            self.statusBar().showMessage(f"저장했지만 화면이 검게 기록된 구간이 있습니다: {result.path.name}", 15000)
+        else:
+            self.statusBar().showMessage(f"녹화를 저장했습니다: {result.path}", 10000)
         self.refresh_recent()
 
     @Slot(object)
@@ -1026,11 +1067,52 @@ class MainWindow(QMainWindow):
         if self.editor is None:
             self.editor = EditorWindow(self.p, lambda: find_ffmpeg(self.settings.ffmpeg_path))
             self.editor.setWindowIcon(self.windowIcon())
+            self.editor.set_output_dir(self.settings.output_dir)
+            self.editor.set_same_folder(self.settings.editor_same_folder)
+            self.editor.output_dir_changed.connect(self._on_editor_output_dir)
+            self.editor.same_folder_changed.connect(self._on_editor_same_folder)
         self.editor.showNormal()
         self.editor.raise_()
         self.editor.activateWindow()
         if paths:
             self.editor.open_files([p for p in paths if p])
+
+    # ── 자막 ───────────────────────────────────────────────────────────────
+    def open_subtitles(self, paths: list[Path | None] | None = None) -> None:
+        """저장한 영상에서 SRT 자막을 만든다. 파일을 넘기지 않으면 고르는 창을 띄운다."""
+        files = [p for p in (paths or []) if p]
+        if not files:
+            start = self.settings.output_dir
+            names, _ = QFileDialog.getOpenFileNames(
+                self, "자막을 만들 영상·소리 파일 선택", start,
+                "영상·소리 파일 (*.mp4 *.mkv *.webm *.mov *.avi *.m4v *.ts *.wav *.mp3 *.m4a *.flac *.ogg *.opus);;모든 파일 (*.*)",
+            )  # fmt: skip
+            files = [Path(n) for n in names]
+            if not files:
+                return
+        avail = subtitle_availability()
+        if not avail.ok:
+            QMessageBox.information(self, "자막 만들기", avail.reason)
+            return
+        if find_ffmpeg(self.settings.ffmpeg_path) is None:
+            QMessageBox.warning(self, "자막 만들기", "FFmpeg를 찾을 수 없습니다. 영상에서 소리를 읽으려면 FFmpeg가 필요합니다.\n도구 → 시스템 진단에서 확인해 주세요.")
+            return
+        if self.subtitle_dialog is not None and self.subtitle_dialog.is_busy:
+            self.subtitle_dialog.raise_()
+            self.subtitle_dialog.activateWindow()
+            self.statusBar().showMessage("자막을 만드는 중입니다. 끝난 뒤 다른 파일을 선택해 주세요.", 6000)
+            return
+        if self.subtitle_dialog is not None:
+            self.subtitle_dialog.close()
+        dialog = SubtitleDialog(
+            files, self.settings, self.p, lambda: find_ffmpeg(self.settings.ffmpeg_path), self._subtitle_cache, self
+        )
+        dialog.setWindowIcon(self.windowIcon())
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.settings_changed.connect(lambda changes: self._save_settings(replace(self.settings, **changes)))
+        dialog.destroyed.connect(lambda *_: setattr(self, "subtitle_dialog", None))
+        self.subtitle_dialog = dialog
+        dialog.show()
 
     # ── 업데이트 ───────────────────────────────────────────────────────────
     def open_manual(self) -> None:
@@ -1084,6 +1166,12 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+        if self.subtitle_dialog is not None and self.subtitle_dialog.is_busy:
+            answer = QMessageBox.question(self, "vCAM 종료", "자막을 만드는 중입니다. 작업을 취소하고 종료할까요?")
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.subtitle_dialog.cancel()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self.controller.shutdown()

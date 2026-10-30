@@ -68,6 +68,7 @@ _PATHS: dict[str, str] = {
     "fwd5": '<path d="M13 6l6 6-6 6M5 6l6 6-6 6"/>',
     "tune": '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
     "exit": '<path d="M14 4.5h4.5a1.5 1.5 0 0 1 1.5 1.5v12a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M10 8l-4 4 4 4M6 12h9.5"/>',
+    "subtitles": '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M6.5 11.5h4.5M13.5 11.5h4M6.5 15h7.5M16.5 15h1"/>',
 }
 
 _TEMPLATE = (

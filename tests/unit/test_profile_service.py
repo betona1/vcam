@@ -54,3 +54,13 @@ def test_unknown_keys_ignored(tmp_path):
         json.dumps({"schema_version": 2, "mystery": 1, "profile": {"fps": 15, "bogus": 2}}), encoding="utf-8"
     )
     assert ProfileService(path).load().profile.fps == 15
+
+
+def test_editor_same_folder_roundtrip_and_default(tmp_path):
+    svc = ProfileService(tmp_path / "settings.json")
+    s = svc.update(Settings(), editor_same_folder=False, output_dir="D:/edit")
+    assert svc.load() == s
+    # 이전 버전 설정 파일(키 없음)은 기본값 True
+    (tmp_path / "old.json").write_text(json.dumps({"schema_version": 3, "output_dir": "D:/v"}), encoding="utf-8")
+    old = ProfileService(tmp_path / "old.json").load()
+    assert old.editor_same_folder is True and old.output_dir == "D:/v"

@@ -93,7 +93,32 @@ def run_probe(ffmpeg_custom: str, output_dir: Path, encoder_preference: str = "a
                    "" if free > 1024**3 else "1GB 이상 확보하는 것을 권장합니다.")  # fmt: skip
     except OSError as exc:
         report.add("저장", "여유 공간", False, str(exc))
+    _probe_subtitles(report)
     return report
+
+
+def _probe_subtitles(report: ProbeReport) -> None:
+    from vcam.subtitles import transcriber
+    from vcam.subtitles.translator import find_offline_model
+
+    avail = transcriber.availability()
+    if not avail.ok:
+        report.add("자막", "음성 인식(faster-whisper)", False, "설치되지 않음", avail.reason.splitlines()[-1])
+        return
+    report.add("자막", "음성 인식(faster-whisper)", True, "설치됨")
+    try:
+        cuda = transcriber.cuda_available()
+    except Exception as exc:  # noqa: BLE001 - 진단 결과로 표시
+        report.add("자막", "GPU 가속(CUDA)", None, f"확인 실패: {exc}")
+    else:
+        report.add("자막", "GPU 가속(CUDA)", True if cuda else None, "사용 가능" if cuda else "없음 → CPU로 처리",
+                   "" if cuda else "NVIDIA GPU가 있으면 cuBLAS/cuDNN DLL을 %LOCALAPPDATA%\\vcam\\cuda 에 넣으면 빨라집니다.")  # fmt: skip
+    cached = transcriber.cached_models()
+    report.add("자막", "받아 둔 Whisper 모델", bool(cached) or None, ", ".join(cached) if cached else "없음",
+               "" if cached else "자막 만들기 창에서 '모델이 없으면 내려받기'를 켜면 처음 한 번 받아 옵니다.")  # fmt: skip
+    found = find_offline_model()
+    report.add("자막", "오프라인 번역 모델", True if found else None,
+               f"{'M2M100' if found and found[1] == 'm2m100' else 'NLLB'} ({found[0]})" if found else "없음 (온라인 번역을 허용해야 번역됨)")  # fmt: skip
 
 
 def _probe_capture(report: ProbeReport) -> None:

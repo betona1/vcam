@@ -21,6 +21,7 @@ try {
         --add-data "$Root\THIRD_PARTY_NOTICES.md;." `
         --add-data "$Root\LICENSE;." `
         --collect-submodules dxcam `
+        --collect-data faster_whisper `
         --hidden-import comtypes.stream `
         --paths "$Root\src" `
         --distpath $Dist --workpath $Work --specpath $Work `

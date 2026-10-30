@@ -1,9 +1,24 @@
-"""녹화 중 미니 컨트롤 바와 카운트다운 표시. 둘 다 녹화 결과에서 제외된다."""
+"""녹화 중 미니 컨트롤 바와 카운트다운 표시.
+
+컨트롤 바는 녹화 영역 안에 놓일 수 있으므로 반드시 캡처에서 제외돼야 한다. 그런데
+SetWindowDisplayAffinity는 반투명(WS_EX_LAYERED) 창에는 실패하거나 무시되므로,
+바는 WA_TranslucentBackground 대신 setMask로 둥근 모양을 만든다.
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QGuiApplication,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRegion,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QWidget
 
 from vcam.platform.windows.capture_affinity import exclude_from_capture
@@ -21,7 +36,7 @@ class RecordingBar(QWidget):
         super().__init__(None)
         self.p = palette_tokens
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # 반투명 배경을 쓰지 않는다 (모듈 설명 참고). 모양은 resizeEvent의 마스크가 만든다.
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAccessibleName("녹화 컨트롤")
         layout = QHBoxLayout(self)
@@ -34,7 +49,10 @@ class RecordingBar(QWidget):
         self.mic_btn = self._button("mic", "마이크 음소거", self.mic_clicked)
         self.stop_btn = self._button("stop", "녹화 종료 (F9)", self.stop_clicked)
         self.restore_btn = self._button("film", "vcam 창 열기", self.restore_clicked)
-        for w in (self.state_label, self.time_label, self.pause_btn, self.mic_btn, self.stop_btn, self.restore_btn):
+        self.warn_label = QLabel()
+        self.warn_label.setAccessibleName("녹화 경고")
+        self.warn_label.hide()
+        for w in (self.state_label, self.time_label, self.warn_label, self.pause_btn, self.mic_btn, self.stop_btn, self.restore_btn):
             layout.addWidget(w)
         self._drag: QPoint | None = None
         self._paused = False
@@ -84,6 +102,27 @@ class RecordingBar(QWidget):
     def set_elapsed(self, text: str) -> None:
         self.time_label.setText(text)
 
+    def set_warning(self, text: str | None, tip: str = "") -> None:
+        """녹화 중 이상 상태(예: 검은 화면)를 바에 짧게 표시한다. None이면 숨긴다."""
+        if not text:
+            if not self.warn_label.isHidden():
+                self.warn_label.hide()
+                self.adjustSize()
+            return
+        self.warn_label.setText(f"⚠ {text}")
+        self.warn_label.setToolTip(tip)
+        self.warn_label.setStyleSheet(f"color: {self.p.warn}; font-weight: 700;")
+        if self.warn_label.isHidden():
+            self.warn_label.show()
+            self.adjustSize()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        path = QPainterPath()
+        r = self.height() / 2
+        path.addRoundedRect(0, 0, self.width(), self.height(), r, r)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
     def show_near(self, area: QRect) -> None:
         """녹화 영역과 겹치지 않는 위치(아래 → 위 → 화면 위쪽 가운데)에 띄운다."""
         self.adjustSize()
@@ -104,9 +143,8 @@ class RecordingBar(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        bg = QColor(self.p.surface)
-        bg.setAlpha(245)
-        painter.setBrush(bg)
+        painter.fillRect(self.rect(), QColor(self.p.surface))
+        painter.setBrush(QColor(self.p.surface))
         painter.setPen(QPen(QColor(self.p.border), 1))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), self.height() / 2, self.height() / 2)
 
