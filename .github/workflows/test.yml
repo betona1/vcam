@@ -1,0 +1,25 @@
+# main에 푸시하거나 수동으로 실행하면 Ruff와 단위 테스트를 Windows 러너에서 돌린다 (릴리스 전 점검용).
+name: test
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: 의존성 설치
+        shell: pwsh
+        run: python -m pip install -q -e ".[dev,subtitles]"
+      - name: Ruff
+        shell: pwsh
+        run: python -m ruff check src tests scripts
+      - name: 단위 테스트
+        shell: pwsh
+        run: python -X faulthandler -m pytest -v -p no:cacheprovider tests/unit
