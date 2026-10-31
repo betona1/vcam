@@ -1,6 +1,7 @@
 ﻿# PyInstaller one-folder 빌드 → <Dist>\vcam\vcam.exe 와 배포용 <Dist>\vcam-<버전>-win64.zip(+.sha256)
 # 사용: .\scripts\build.ps1 [-Dist 경로]
 # FFmpeg는 번들하지 않는다(코덱 라이선스 검토 전). 사용자는 winget 등으로 설치하거나 설정에서 경로를 지정한다.
+# PyAV(faster-whisper 의존성)도 넣지 않는다: 동봉 FFmpeg DLL이 GPL 빌드라서. 대신 pyi_rth_no_pyav.py가 빈 모듈을 등록한다.
 param([string]$Dist = "")
 . "$PSScriptRoot\_venv.ps1"
 if (-not $Dist) {
@@ -22,6 +23,9 @@ try {
         --add-data "$Root\LICENSE;." `
         --collect-submodules dxcam `
         --collect-data faster_whisper `
+        --collect-binaries ctranslate2 `
+        --exclude-module av `
+        --runtime-hook "$Root\scripts\pyi_rth_no_pyav.py" `
         --hidden-import comtypes.stream `
         --paths "$Root\src" `
         --distpath $Dist --workpath $Work --specpath $Work `

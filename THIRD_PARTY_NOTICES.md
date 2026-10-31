@@ -27,11 +27,12 @@ vCAM은 아래 오픈 소스 구성 요소를 **의존성으로 사용**합니�
 | [sentencepiece](https://github.com/google/sentencepiece) | 번역 토크나이저 | Apache-2.0 |
 | [tokenizers](https://github.com/huggingface/tokenizers), [huggingface_hub](https://github.com/huggingface/huggingface_hub) | 모델 토크나이저·내려받기 | Apache-2.0 |
 | [deep-translator](https://github.com/nidhaloff/deep-translator) | 온라인 번역(사용자가 켠 경우만) | MIT — Google 번역은 비공식 엔드포인트, MyMemory는 자체 약관 |
-| [PyAV](https://github.com/PyAV-Org/PyAV) | faster-whisper의 의존성. **vCAM은 실행 시 사용하지 않음**(소리 추출은 외부 FFmpeg) | BSD-3-Clause 코드 + **동봉 FFmpeg DLL은 GPL 빌드(libx264/x265 포함)** |
+| [PyAV](https://github.com/PyAV-Org/PyAV) | faster-whisper의 의존성. **vCAM은 사용하지 않고 배포본에도 넣지 않음**(소리 추출은 외부 FFmpeg) | BSD-3-Clause 코드 + 동봉 FFmpeg DLL은 GPL 빌드 → 배포본에서 제외 |
 
-**배포 시 주의:** `subtitles` 항목을 포함해 PyInstaller로 빌드하면 PyAV에 동봉된 GPL FFmpeg DLL이 배포본에 들어갑니다.
-이 경우 배포본 전체가 GPL 호환 조건을 따라야 하므로, 자막 기능이 포함된 빌드를 배포하기 전에 라이선스 표기를 정리하거나
-PyAV를 LGPL 빌드로 교체해야 합니다. 자막 기능이 없는 빌드(기본)는 영향이 없습니다.
+**배포본과 PyAV:** PyAV의 Windows 휠에는 GPL 빌드 FFmpeg DLL(libx264/x265 포함)이 들어 있어, 이를 함께 배포하면 MIT 배포본 전체가
+GPL 조건을 따라야 합니다. 그래서 `scripts/build.ps1`은 `--exclude-module av`로 PyAV를 배포본에서 빼고, 런타임 훅
+`scripts/pyi_rth_no_pyav.py`가 import만 통과하는 빈 `av` 모듈을 등록합니다(vCAM은 PyAV 기능을 호출하지 않음).
+배포본에는 PyAV 코드도 FFmpeg DLL도 포함되지 않습니다. 개발 환경(`pip install vcam[subtitles]`)에는 PyAV가 설치되지만 실행 시 쓰지 않습니다.
 
 ### 별도로 내려받는 모델·런타임 (배포본에 포함하지 않음)
 
@@ -40,7 +41,7 @@ PyAV를 LGPL 빌드로 교체해야 합니다. 자막 기능이 없는 빌드(�
 | Whisper 모델 (Systran/faster-whisper-* 등) | MIT | 사용자가 '모델이 없으면 내려받기'를 켠 경우 HuggingFace에서 받음 |
 | M2M100_418M (facebook/m2m100_418M, CTranslate2 int8 변환본) | MIT | 기본 오프라인 번역 모델. 사용자가 `%LOCALAPPDATA%\vcam\models`에 넣음 |
 | NLLB-200 (facebook/nllb-200-distilled-600M) | **CC-BY-NC-4.0 (비상업 전용)** | 배포하지 않음. 사용자가 직접 넣은 경우에만 인식 |
-| NVIDIA CUDA Runtime / cuBLAS 12, cuDNN 9 | NVIDIA EULA / cuDNN SLA | GPU 가속용. 사용자가 `%LOCALAPPDATA%\vcam\cuda`에 두거나 `vcam[subtitles-cuda]`로 설치 |
+| NVIDIA CUDA Runtime / cuBLAS 12, cuDNN 9 | NVIDIA EULA / cuDNN SLA | GPU 가속용. 사용자가 `%LOCALAPPDATA%\vcam\cuda`에 두거나 `vcam[subtitles-cuda]`로 설치. CTranslate2 휠에 든 작은 `cudnn64_9.dll` 로더와 Intel `libiomp5md.dll`(Intel Simplified Software License)은 배포본에 포함 |
 
 ## FFmpeg
 
