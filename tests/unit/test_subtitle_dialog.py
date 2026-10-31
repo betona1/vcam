@@ -2,22 +2,50 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QMessageBox
 
 from vcam.services.profile_service import Settings
 from vcam.subtitles import transcriber as tr
 from vcam.subtitles.pipeline import EngineCache
+from vcam.ui import subtitle_dialog as sd
 from vcam.ui.subtitle_dialog import SubtitleDialog, settings_to_options
 from vcam.ui.theme import apply_theme
+
+
+@pytest.fixture(autouse=True)
+def no_hardware_probe(monkeypatch):
+    """단위 테스트는 GPU와 번역 모델 폴더를 실제로 찾지 않는다 (CI 러너에는 둘 다 없고 라이브러리 로드만 느리다)."""
+    monkeypatch.setattr(tr, "cuda_available", lambda: False)
+    monkeypatch.setattr(sd, "find_offline_model", lambda extra=None: None)
 
 
 def make_dialog(qtbot, qapp, settings=None, ffmpeg=None):
     d = SubtitleDialog([Path("C:/v/a.mp4"), Path("C:/v/b.mp4")], settings or Settings(), apply_theme(qapp, "dark"),
                        lambda: ffmpeg, EngineCache())  # fmt: skip
     qtbot.addWidget(d)
+    qtbot.waitUntil(lambda: not d._env_thread.is_alive(), timeout=5000)  # 환경 확인 스레드가 창보다 오래 살지 않게
+    qapp.processEvents()
     return d
+
+
+def test_environment_probe_survives_dialog_deletion(qtbot, qapp, monkeypatch):
+    """환경 확인이 끝나기 전에 창이 지워져도 (CI 러너에서 실제로 난 힙 손상) 스레드가 조용히 끝난다."""
+    gate = threading.Event()
+    monkeypatch.setattr(tr, "cuda_available", lambda: gate.wait(5) and False)
+    d = SubtitleDialog([Path("C:/v/a.mp4")], Settings(), apply_theme(qapp, "dark"), lambda: None, EngineCache())
+    thread = d._env_thread
+    d.close()
+    d.deleteLater()
+    del d
+    qapp.processEvents()  # deleteLater 처리 → C++ 객체 삭제
+    gate.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    qapp.processEvents()
 
 
 def test_options_follow_settings(qtbot, qapp):

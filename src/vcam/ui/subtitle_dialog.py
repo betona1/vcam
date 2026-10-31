@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import weakref
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+import shiboken6
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -88,6 +90,7 @@ class SubtitleDialog(QDialog):
         self._cache = cache
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
+        self._env_thread: threading.Thread | None = None
         self._results: list[SubtitleResult] = []
         self._done = 0
         self._bridge = _Bridge(self)
@@ -281,8 +284,13 @@ class SubtitleDialog(QDialog):
             self._probe_environment()
 
     def _probe_environment(self) -> None:
-        """GPU와 오프라인 번역 모델 확인은 라이브러리 로드가 필요해 작업 스레드에서 한다."""
+        """GPU와 오프라인 번역 모델 확인은 라이브러리 로드가 필요해 작업 스레드에서 한다.
+
+        스레드는 대화상자를 강하게 붙잡지 않는다. 확인이 끝나기 전에 창이 닫혀 지워졌으면
+        결과를 버린다 (지워진 QObject로 신호를 보내면 프로세스가 죽을 수 있다).
+        """
         model_dir = self.edt_model_dir.text().strip() or None
+        bridge_ref = weakref.ref(self._bridge)
 
         def work() -> None:
             try:
@@ -290,9 +298,14 @@ class SubtitleDialog(QDialog):
             except Exception:  # noqa: BLE001 - 확인 실패는 '없음'으로 표시
                 cuda = False
             found = find_offline_model(model_dir)
-            self._bridge.environment.emit(cuda, found)
+            bridge = bridge_ref()
+            if bridge is None or not shiboken6.isValid(bridge):
+                log.debug("환경 확인이 끝나기 전에 자막 창이 닫혀 결과를 버립니다")
+                return
+            bridge.environment.emit(cuda, found)
 
-        threading.Thread(target=work, name="vcam-subtitle-env", daemon=True).start()
+        self._env_thread = threading.Thread(target=work, name="vcam-subtitle-env", daemon=True)
+        self._env_thread.start()
 
     @Slot(bool, object)
     def _on_environment(self, cuda: bool, found) -> None:
