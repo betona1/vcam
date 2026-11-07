@@ -250,9 +250,9 @@ class RecordingController(QObject):
                 "FFmpeg를 찾을 수 없어 녹화할 수 없습니다. [도구 → 시스템 진단]에서 FFmpeg 위치를 지정해 주세요.",
             )
         if not is_writable_dir(out):
-            return UserFacingError("output_not_writable", "저장 폴더에 쓸 수 없습니다. 다른 저장 폴더를 선택해 주세요.")
+            return UserFacingError("output_not_writable", "작업 폴더에 쓸 수 없습니다. 다른 작업 폴더를 선택해 주세요.")
         if free_bytes(out) < MIN_START_FREE_BYTES:
-            return UserFacingError("disk_low", "저장 폴더의 여유 공간이 1GB 미만입니다. 공간을 확보한 뒤 녹화해 주세요.")
+            return UserFacingError("disk_low", "작업 폴더의 여유 공간이 1GB 미만입니다. 공간을 확보한 뒤 녹화해 주세요.")
         if free_bytes(sessions_dir()) < MIN_START_FREE_BYTES:
             return UserFacingError("disk_low", "녹화 임시 파일을 저장할 C 드라이브(%LOCALAPPDATA%)의 여유 공간이 1GB 미만입니다.")
         return None

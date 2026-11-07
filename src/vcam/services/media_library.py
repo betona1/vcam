@@ -1,4 +1,4 @@
-"""저장 폴더의 최근 녹화 목록과 썸네일."""
+"""작업 폴더의 최근 녹화·내려받기 목록과 썸네일."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from vcam.util.paths import cache_dir
 log = logging.getLogger(__name__)
 
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov"}
+AUDIO_SUFFIXES = {".mp3", ".m4a"}  # 인터넷 영상에서 소리만 내려받은 파일
+LIBRARY_SUFFIXES = VIDEO_SUFFIXES | AUDIO_SUFFIXES
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,7 @@ def list_recordings(directory: Path, limit: int = 30) -> list[Path]:
         return []
     files = [
         p for p in directory.iterdir()
-        if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES and not p.name.startswith(".")
+        if p.is_file() and p.suffix.lower() in LIBRARY_SUFFIXES and not p.name.startswith(".")
     ]  # fmt: skip
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files[:limit]
@@ -57,7 +59,7 @@ def thumbnail_for(ffmpeg: FfmpegPaths, path: Path, media: MediaInfo | None) -> P
 
 def load_item(ffmpeg: FfmpegPaths | None, path: Path) -> LibraryItem:
     media = thumb = None
-    if ffmpeg is not None:
+    if ffmpeg is not None and path.suffix.lower() not in AUDIO_SUFFIXES:
         try:
             media = probe_media(ffmpeg, path)
         except ValidationError as exc:

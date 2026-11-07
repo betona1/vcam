@@ -67,6 +67,7 @@ from vcam.ui.dialogs import (
     SettingsDialog,
     show_consent_notice,
 )
+from vcam.ui.download_dialog import DownloadDialog
 from vcam.ui.editor.editor_window import EditorWindow
 from vcam.ui.subtitle_dialog import SubtitleDialog
 from vcam.ui.theme import apply_theme
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         self._last_result: RecordingResult | None = None
         self.editor: EditorWindow | None = None
         self.subtitle_dialog: SubtitleDialog | None = None
+        self.download_dialog: DownloadDialog | None = None
         self._subtitle_cache = EngineCache()  # Whisper 모델은 앱이 켜져 있는 동안 한 번만 불러온다
         self._screens_dirty = False
         self._selector: RegionSelector | None = None
@@ -204,8 +206,8 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         mb = self.menuBar()
         m_file = mb.addMenu("파일(&F)")
-        self._action(m_file, "저장 폴더 열기", self.open_output_dir, "folder")
-        self._action(m_file, "저장 폴더 변경…", self.change_output_dir, "folder_edit")
+        self._action(m_file, "작업 폴더 열기", self.open_output_dir, "folder")
+        self._action(m_file, "작업 폴더 변경…", self.change_output_dir, "folder_edit")
         m_file.addSeparator()
         self._action(m_file, "종료", self.close, "exit", "Alt+F4")
 
@@ -236,6 +238,8 @@ class MainWindow(QMainWindow):
         act_edit.setShortcut("Ctrl+E")
         act_sub = self._action(m_tools, "자막 만들기 (SRT)…", lambda: self.open_subtitles(), "subtitles", "Ctrl+T")
         act_sub.setShortcut("Ctrl+T")
+        act_dl = self._action(m_tools, "인터넷 영상 내려받기 (YouTube·TikTok·Instagram 등)…", lambda: self.open_downloads(), "download", "Ctrl+D")
+        act_dl.setShortcut("Ctrl+D")
         m_tools.addSeparator()
         self._action(m_tools, "시스템 진단…", self.open_diagnostics, "pulse")
         self._action(m_tools, "미완료 녹화 복구…", lambda: self.open_recovery(manual=True), "lifebuoy")
@@ -296,6 +300,10 @@ class MainWindow(QMainWindow):
         edit_btn.setText("편집기")
         edit_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         top.addWidget(edit_btn)
+        dl_btn = self._tool("download", "인터넷 영상 내려받기 — YouTube·TikTok·Instagram 등 (Ctrl+D)", lambda: self.open_downloads())
+        dl_btn.setText("내려받기")
+        dl_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        top.addWidget(dl_btn)
         top.addWidget(self._tool("pulse", "시스템 진단", self.open_diagnostics))
         top.addWidget(self._tool("settings", "설정", self.open_settings))
         top.addWidget(self._tool("help", "사용 안내", lambda: AboutDialog(self.p, __version__, self, help_mode=True).exec()))
@@ -352,8 +360,8 @@ class MainWindow(QMainWindow):
         self.output_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         out_box = QHBoxLayout()
         out_box.addWidget(self.output_label, 1)
-        out_box.addWidget(self._tool("folder", "저장 폴더 열기", self.open_output_dir, size=18))
-        out_box.addWidget(self._tool("folder_edit", "저장 폴더 변경", self.change_output_dir, size=18))
+        out_box.addWidget(self._tool("folder", "작업 폴더 열기", self.open_output_dir, size=18))
+        out_box.addWidget(self._tool("folder_edit", "작업 폴더 변경", self.change_output_dir, size=18))
 
         quality_box = QHBoxLayout()
         quality_box.addWidget(self.fps_combo, 1)
@@ -363,7 +371,7 @@ class MainWindow(QMainWindow):
             ("resize", "크기", self.size_label),
             ("sparkle", "화질", quality_box),
             ("film", "인코더", self.encoder_label),
-            ("folder", "저장", out_box),
+            ("folder", "작업 폴더", out_box),
         ]
         for r, (icon_name, label, widget) in enumerate(rows):
             ic = QLabel()
@@ -398,6 +406,8 @@ class MainWindow(QMainWindow):
         rh.addWidget(title)
         rh.addWidget(self.recent_count)
         rh.addStretch(1)
+        rh.addWidget(self._tool("download", "인터넷 영상 내려받기 (YouTube·TikTok·Instagram 등) — 작업 폴더에 저장되어 이 목록에 나타납니다",
+                                lambda: self.open_downloads(), size=18))  # fmt: skip
         rh.addWidget(self._tool("play", "재생", lambda: self.recent.play(), size=18))
         rh.addWidget(self._tool("scissors", "선택한 녹화를 편집기에서 열기",
                                 lambda: self.open_editor([self.recent.selected_path()] if self.recent.selected_path() else None), size=18))
@@ -790,10 +800,12 @@ class MainWindow(QMainWindow):
         if self.editor is not None:
             self.editor.set_output_dir(settings.output_dir)
             self.editor.set_same_folder(settings.editor_same_folder)
+        if self.download_dialog is not None:
+            self.download_dialog.set_output_dir(settings.output_dir)
 
     @Slot(str)
     def _on_editor_output_dir(self, path: str) -> None:
-        """편집기에서 고른 저장 폴더는 녹화 저장 폴더와 같은 설정이다."""
+        """편집기에서 고른 저장 폴더는 작업 폴더와 같은 설정이다."""
         if path != self.settings.output_dir:
             self._save_settings(replace(self.settings, output_dir=path))
             self.refresh_recent()
@@ -824,7 +836,7 @@ class MainWindow(QMainWindow):
                 self.refresh_recent()
 
     def change_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.settings.output_dir)
+        path = QFileDialog.getExistingDirectory(self, "작업 폴더 선택", self.settings.output_dir)
         if path:
             self._save_settings(replace(self.settings, output_dir=path))
             self.refresh_recent()
@@ -1114,6 +1126,25 @@ class MainWindow(QMainWindow):
         self.subtitle_dialog = dialog
         dialog.show()
 
+    # ── 인터넷 영상 내려받기 ───────────────────────────────────────────────
+    def open_downloads(self, urls: list[str] | None = None) -> None:
+        """yt-dlp로 인터넷 영상을 작업 폴더에 내려받는 창. 받은 파일은 최근 녹화 목록에 나타난다."""
+        if self.download_dialog is None:
+            dialog = DownloadDialog(self.settings, self.p, lambda: find_ffmpeg(self.settings.ffmpeg_path), self)
+            dialog.setWindowIcon(self.windowIcon())
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            dialog.settings_changed.connect(lambda changes: self._save_settings(replace(self.settings, **changes)))
+            dialog.files_added.connect(lambda _files: self.refresh_recent())
+            dialog.subtitles_requested.connect(lambda files: self.open_subtitles(list(files)))
+            dialog.edit_requested.connect(lambda files: self.open_editor(list(files)))
+            dialog.destroyed.connect(lambda *_: setattr(self, "download_dialog", None))
+            self.download_dialog = dialog
+        self.download_dialog.show()
+        self.download_dialog.raise_()
+        self.download_dialog.activateWindow()
+        if urls:
+            self.download_dialog.add_urls(urls)
+
     # ── 업데이트 ───────────────────────────────────────────────────────────
     def open_manual(self) -> None:
         QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}/blob/main/docs/USER_GUIDE.md"))
@@ -1172,6 +1203,12 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.subtitle_dialog.cancel()
+        if self.download_dialog is not None and self.download_dialog.is_busy:
+            answer = QMessageBox.question(self, "vCAM 종료", "인터넷 영상을 내려받는 중입니다. 취소하고 종료할까요?")
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.download_dialog.cancel()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self.controller.shutdown()

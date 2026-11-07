@@ -46,6 +46,17 @@ class Settings:
     subtitle_online: bool = False  # 온라인 번역(Google·MyMemory) 허용 — 자막 본문이 외부로 전송됨
     subtitle_model_dir: str = ""  # 오프라인 번역 모델 폴더
     subtitle_max_chars: int = 45
+    # 인터넷 영상 내려받기 마지막 선택값 (저장 위치는 항상 작업 폴더 output_dir)
+    download_kind: str = "video"  # video | audio
+    download_quality: str = "best"  # best | 2160 | 1440 | 1080 | 720 | 480 | 360
+    download_audio_format: str = "mp3"  # mp3 | m4a
+    download_subtitles: bool = False  # 사이트 자막(SRT) 함께 받기
+    download_auto_subtitles: bool = False
+    download_subtitle_langs: tuple[str, ...] = ("ko", "en")
+    download_playlist: bool = False
+    download_make_subtitles: bool = False  # 받은 뒤 Whisper 자막 만들기 창 열기
+    download_cookies_browser: str = ""  # 로그인 쿠키를 읽을 브라우저(firefox·chrome·edge·brave) 또는 'file'. 비우면 안 씀
+    download_cookies_file: str = ""  # 'file'일 때 cookies.txt 경로
     profile: RecordingProfile = field(default_factory=RecordingProfile)
 
     @property
@@ -85,8 +96,9 @@ def _from_dict(data: dict[str, Any]) -> Settings:
     )
     if values.get("last_region") is not None:
         values["last_region"] = tuple(int(v) for v in values["last_region"])
-    if "subtitle_targets" in values:
-        values["subtitle_targets"] = tuple(str(v) for v in (values["subtitle_targets"] or ()))
+    for key in ("subtitle_targets", "download_subtitle_langs"):
+        if key in values:
+            values[key] = tuple(str(v) for v in (values[key] or ()))
     return Settings(**values)
 
 

@@ -32,6 +32,20 @@ subtitles = [
 ]
 # NVIDIA GPU 가속용 cuBLAS/cuDNN 런타임 (약 1GB). 없으면 CPU로 동작한다.
 subtitles-cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
+# 인터넷 영상 내려받기(YouTube·TikTok·Instagram 등): yt-dlp(Unlicense). mutagen(GPL)은 넣지 않는다 — 썸네일/태그 삽입에만 필요.
+# YouTube는 JS 런타임(Deno 권장)이 있어야 모든 화질을 받을 수 있다. 없으면 앱이 설치 방법을 안내한다.
+# curl_cffi(MIT, 약 5MB): TikTok·Instagram이 요구하는 브라우저 위장(TLS 지문). 버전 범위는 yt-dlp가 지원하는 범위를 따른다.
+download = [
+    "yt-dlp>=2026.10",
+    "yt-dlp-ejs>=0.8",
+    "curl_cffi>=0.10,<0.18",
+    "pycryptodomex>=3.20",
+    "certifi",
+    "requests>=2.32",
+    "urllib3>=2.2",
+    "websockets>=13",
+    "brotli",
+]
 
 [project.scripts]
 vcam = "vcam.__main__:main"

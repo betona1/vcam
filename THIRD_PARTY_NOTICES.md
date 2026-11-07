@@ -43,6 +43,20 @@ GPL 조건을 따라야 합니다. 그래서 `scripts/build.ps1`은 `--exclude-m
 | NLLB-200 (facebook/nllb-200-distilled-600M) | **CC-BY-NC-4.0 (비상업 전용)** | 배포하지 않음. 사용자가 직접 넣은 경우에만 인식 |
 | NVIDIA CUDA Runtime / cuBLAS 12, cuDNN 9 | NVIDIA EULA / cuDNN SLA | GPU 가속용. 사용자가 `%LOCALAPPDATA%\vcam\cuda`에 두거나 `vcam[subtitles-cuda]`로 설치. CTranslate2 휠에 든 작은 `cudnn64_9.dll` 로더와 Intel `libiomp5md.dll`(Intel Simplified Software License)은 배포본에 포함 |
 
+## 인터넷 영상 내려받기 — 선택 설치 `vcam[download]`
+
+| 구성 요소 | 용도 | 라이선스 |
+| --- | --- | --- |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | YouTube·TikTok·Instagram 등 인터넷 영상·자막 내려받기 (별도 프로세스가 아닌 Python 모듈로 호출, 코드 복사 없음) | Unlicense (퍼블릭 도메인) |
+| [yt-dlp-ejs](https://github.com/yt-dlp/ejs) | YouTube 서명 해독용 JavaScript 스크립트 | Unlicense AND MIT AND ISC |
+| [curl_cffi](https://github.com/lexiforest/curl_cffi) | TikTok·Instagram 등이 요구하는 브라우저 위장(TLS 지문) 네트워크 계층. 배포본에 `libcurl-impersonate` DLL 포함 | MIT. 동봉 DLL은 [curl-impersonate](https://github.com/lexiforest/curl-impersonate)(MIT)와 curl(curl 라이선스), BoringSSL(ISC·OpenSSL), nghttp2(MIT), brotli(MIT), zlib, zstd(BSD-3) 등을 정적 링크 — 배포 직전 휠의 licenses 폴더로 재확인 |
+| [pycryptodomex](https://github.com/Legrandin/pycryptodome) | 암호화된 HLS 조각 복호화 | BSD-2-Clause / Public Domain |
+| [requests](https://github.com/psf/requests), [urllib3](https://github.com/urllib3/urllib3), [certifi](https://github.com/certifi/python-certifi), [websockets](https://github.com/python-websockets/websockets), [Brotli](https://github.com/google/brotli) | yt-dlp 네트워크 계층 | Apache-2.0 / MIT / MPL-2.0 / BSD-3-Clause / MIT |
+
+- **mutagen**(GPL-2.0+)은 yt-dlp의 선택 의존성이지만 vCAM은 설치·배포하지 않습니다 (썸네일·태그 삽입을 쓰지 않음).
+- **JS 런타임(Deno 등)** 은 배포본에 넣지 않습니다. 사용자가 `winget install DenoLand.Deno`로 설치하면 앱이 PATH에서 찾아 씁니다 (Deno: MIT).
+- 내려받은 영상의 저작권과 각 사이트의 이용약관은 사용자가 지켜야 합니다. 앱은 DRM을 우회하지 않습니다. 로그인이 필요한 영상은 사용자가 '로그인 쿠키' 옵션을 켠 경우에만 사용자 브라우저의 쿠키를 그 사이트로 보냅니다.
+
 ## FFmpeg
 
 vcam은 FFmpeg/ffprobe를 **별도 프로세스로 실행**하며 배포본에 포함하지 않습니다.

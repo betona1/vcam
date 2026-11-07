@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QListWidget, QListWidgetItem, QMenu, QMessageBox, 
 
 from vcam.encoding.ffmpeg import FfmpegPaths
 from vcam.platform.windows.trash import TrashError, send_to_trash
-from vcam.services.media_library import LibraryItem, list_recordings, load_item
+from vcam.services.media_library import AUDIO_SUFFIXES, LibraryItem, list_recordings, load_item
 from vcam.ui import icons
 from vcam.ui.tokens import Palette
 from vcam.util.paths import format_bytes, format_duration
@@ -51,10 +51,12 @@ class RecentRecordings(QListWidget):
         self._loader.loaded.connect(self._on_loaded)
         self._generation = 0
         self._placeholder = self._make_placeholder()
+        self._audio_placeholder = self._make_placeholder("music")
 
     def set_palette(self, p: Palette) -> None:
         self.p = p
         self._placeholder = self._make_placeholder()
+        self._audio_placeholder = self._make_placeholder("music")
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -62,10 +64,10 @@ class RecentRecordings(QListWidget):
             painter = QPainter(self.viewport())
             painter.setPen(QColor(self.p.muted))
             painter.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter,
-                             "아직 녹화한 영상이 없습니다. F9를 눌러 첫 녹화를 시작해 보세요.")  # fmt: skip
+                             "아직 파일이 없습니다. F9로 녹화하거나 ⬇ 내려받기로 인터넷 영상을 받아 보세요.")  # fmt: skip
 
-    def _make_placeholder(self) -> QIcon:
-        return QIcon(icons.pixmap("film", self.p.muted, 40, 2.0))
+    def _make_placeholder(self, name: str = "film") -> QIcon:
+        return QIcon(icons.pixmap(name, self.p.muted, 40, 2.0))
 
     def refresh(self, directory: Path, ffmpeg: FfmpegPaths | None) -> None:
         self._generation += 1
@@ -94,7 +96,8 @@ class RecentRecordings(QListWidget):
             row = QListWidgetItem(f"{it.path.name}\n{detail}")
             row.setData(Qt.ItemDataRole.UserRole, str(it.path))
             row.setToolTip(str(it.path))
-            row.setIcon(QIcon(QPixmap(str(it.thumbnail))) if it.thumbnail else self._placeholder)
+            fallback = self._audio_placeholder if it.path.suffix.lower() in AUDIO_SUFFIXES else self._placeholder
+            row.setIcon(QIcon(QPixmap(str(it.thumbnail))) if it.thumbnail else fallback)
             row.setSizeHint(QSize(0, THUMB.height() + 12))
             self.addItem(row)
         self.count_changed.emit(len(items))

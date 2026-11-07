@@ -85,8 +85,8 @@ def run_probe(ffmpeg_custom: str, output_dir: Path, encoder_preference: str = "a
     _probe_audio(report)
 
     writable = is_writable_dir(output_dir)
-    report.add("저장", "저장 폴더 쓰기", writable, str(output_dir),
-               "" if writable else "다른 저장 폴더를 선택해 주세요.")  # fmt: skip
+    report.add("저장", "작업 폴더 쓰기", writable, str(output_dir),
+               "" if writable else "다른 작업 폴더를 선택해 주세요.")  # fmt: skip
     try:
         free = free_bytes(output_dir)
         report.add("저장", "여유 공간", free > 1024**3, format_bytes(free),
@@ -94,7 +94,26 @@ def run_probe(ffmpeg_custom: str, output_dir: Path, encoder_preference: str = "a
     except OSError as exc:
         report.add("저장", "여유 공간", False, str(exc))
     _probe_subtitles(report)
+    _probe_download(report)
     return report
+
+
+def _probe_download(report: ProbeReport) -> None:
+    from vcam.download import engine
+
+    avail = engine.availability()
+    if not avail.ok:
+        report.add("내려받기", "yt-dlp", False, "설치되지 않음", avail.reason.splitlines()[-1])
+        return
+    report.add("내려받기", "yt-dlp", True, engine.engine_version())
+    runtime = engine.find_js_runtime()
+    report.add("내려받기", "JS 런타임 (YouTube)", True if runtime else None,
+               f"{runtime[0]} ({runtime[1]})" if runtime else "없음 → 일부 화질을 못 받을 수 있음",
+               "" if runtime else engine.DENO_INSTALL_HINT)  # fmt: skip
+    imp = engine.impersonation_available()
+    report.add("내려받기", "브라우저 위장 (TikTok·Instagram)", True if imp.ok else None,
+               "curl_cffi 있음" if imp.ok else "없음 → TikTok·Instagram 등 일부 사이트를 못 받을 수 있음",
+               "" if imp.ok else engine.CURL_CFFI_INSTALL_HINT)  # fmt: skip
 
 
 def _probe_subtitles(report: ProbeReport) -> None:

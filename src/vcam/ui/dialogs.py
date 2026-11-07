@@ -71,13 +71,17 @@ HELP_TEXT = """<h3>빠른 사용법</h3>
 <h3>자막 만들기 (SRT)</h3>
 <p>최근 녹화에서 영상을 오른쪽 클릭 → <b>자막 만들기 (SRT)…</b>. PC 안의 Whisper 음성 인식으로 <b>영상이름.언어.srt</b>를 만들고,
 원하면 한국어·영어·일본어 등으로 번역한 자막도 함께 만듭니다. 처음 한 번 모델을 내려받으면 그 뒤로는 인터넷 없이 동작합니다.</p>
+<h3>인터넷 영상 내려받기</h3>
+<p>위쪽 <b>⬇ 내려받기</b>(Ctrl+D)에서 YouTube·TikTok·Instagram 등 영상 주소를 붙여 넣고 Enter. 화질(또는 소리만 MP3), 사이트 자막, 재생목록을 골라
+<b>작업 폴더</b>에 받고, 받은 파일은 <b>최근 녹화</b>에 바로 나타나 편집·자막 만들기로 이어집니다.
+로그인해야 보이는 영상은 <b>로그인 쿠키</b>에서 로그인해 둔 브라우저를 고르면 받을 수 있습니다 (쿠키는 그 사이트에만 보냄).</p>
 <h3>단축키</h3>
 <table cellpadding="4">
 <tr><td><b>F9</b></td><td>녹화 시작 / 종료 (카운트다운 중에는 취소)</td></tr>
 <tr><td><b>F10</b></td><td>일시정지 / 재개</td></tr>
 <tr><td><b>Enter / Esc</b></td><td>영역 선택 확정 / 취소</td></tr>
 <tr><td><b>방향키</b></td><td>영역 선택 중 1px 이동 (Shift: 10px)</td></tr>
-<tr><td><b>Ctrl+E</b> / <b>Ctrl+T</b></td><td>동영상 편집기 / 자막 만들기</td></tr>
+<tr><td><b>Ctrl+E</b> / <b>Ctrl+T</b> / <b>Ctrl+D</b></td><td>동영상 편집기 / 자막 만들기 / 인터넷 영상 내려받기</td></tr>
 </table>
 <h3>소리</h3>
 <p>오른쪽 패널에서 <b>시스템 소리</b>(PC에서 나는 소리)와 <b>마이크</b>를 각각 켜고 장치를 고릅니다.
@@ -102,12 +106,12 @@ class SettingsDialog(QDialog):
 
         self.output = QLineEdit(settings.output_dir)
         browse = QPushButton(icons.icon("folder", palette_tokens.text), "")
-        browse.setToolTip("저장 폴더 선택")
+        browse.setToolTip("작업 폴더 선택")
         browse.clicked.connect(self._browse_output)
         row = QHBoxLayout()
         row.addWidget(self.output, 1)
         row.addWidget(browse)
-        form.addRow("저장 폴더", row)
+        form.addRow("작업 폴더", row)
 
         self.template = QLineEdit(settings.filename_template)
         self.template_preview = QLabel()
@@ -189,7 +193,7 @@ class SettingsDialog(QDialog):
         self.template_preview.setText("예: " + render_filename(self.template.text() or DEFAULT_FILENAME_TEMPLATE, datetime.now()) + ".mp4")
 
     def _browse_output(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.output.text())
+        path = QFileDialog.getExistingDirectory(self, "작업 폴더 선택", self.output.text())
         if path:
             self.output.setText(path)
 

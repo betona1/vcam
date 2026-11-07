@@ -411,12 +411,12 @@ class EditorWindow(QMainWindow):
         # 저장 위치·이름
         loc = QGroupBox("저장 위치")
         ll = QVBoxLayout(loc)
-        self.same_folder = QCheckBox("원본과 같은 폴더")
+        self.same_folder = QCheckBox("원본과 같은 폴더 (끄면 작업 폴더)")
         self.same_folder.setChecked(True)
         self.out_dir = QLineEdit(str(default_output_dir()))
-        self.out_dir.setToolTip("녹화 저장 폴더와 같은 설정입니다. 여기서 바꾸면 메인 화면의 저장 폴더도 바뀝니다.")
+        self.out_dir.setToolTip("vCAM 작업 폴더(녹화·내려받기·편집 결과가 모이는 곳)와 같은 설정입니다. 여기서 바꾸면 메인 화면의 작업 폴더도 바뀝니다.")
         self.out_dir.editingFinished.connect(self._on_out_dir_edited)
-        browse = self._browse_btn = self._icon_btn("folder", "저장 폴더 선택", self._browse_out)
+        browse = self._browse_btn = self._icon_btn("folder", "작업 폴더 선택", self._browse_out)
         drow = QHBoxLayout()
         drow.addWidget(self.out_dir, 1)
         drow.addWidget(browse)
@@ -786,7 +786,7 @@ class EditorWindow(QMainWindow):
             self.enc_summary.setText(summarize(self.encode))
 
     def _browse_out(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.out_dir.text())
+        path = QFileDialog.getExistingDirectory(self, "작업 폴더 선택", self.out_dir.text())
         if path:
             self.out_dir.setText(path)
             self._on_out_dir_edited()
@@ -798,7 +798,7 @@ class EditorWindow(QMainWindow):
             self.output_dir_changed.emit(path)
 
     def set_output_dir(self, path: str) -> None:
-        """메인 창의 저장 폴더 설정을 따라간다. 신호를 다시 내보내지 않는다."""
+        """메인 창의 작업 폴더 설정을 따라간다. 신호를 다시 내보내지 않는다."""
         self._out_dir_known = path
         if self.out_dir.text() != path:
             self.out_dir.setText(path)
