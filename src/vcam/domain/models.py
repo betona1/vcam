@@ -132,6 +132,9 @@ class RecordingMetrics:
     file_bytes: int = 0
     encoder: str = ""
     black_screen: bool = False  # 최근 몇 초간 캡처 프레임이 계속 검음 (보호된 콘텐츠 등)
+    audio_silent: bool = False  # 시스템 소리가 켜져 있는데 몇 초째 디지털 무음 (엉뚱한 장치를 녹음 중일 가능성)
+    still_ns: int = 0  # 화면이 마지막으로 바뀐 뒤 흐른 녹화 시간(일시정지 제외)
+    idle_stop_in_s: float | None = None  # 자동 종료가 켜져 있고 화면·소리가 멈춰 있을 때 종료까지 남은 초
 
 
 @dataclass(frozen=True)

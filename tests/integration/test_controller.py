@@ -1,5 +1,7 @@
 """RecordingController 전 구간: 상태 머신 → 작업 스레드 → FFmpeg → 검증된 MP4."""
 
+from dataclasses import replace
+
 import pytest
 
 from vcam.audio.base import FakeAudioSource
@@ -145,3 +147,106 @@ def test_shutdown_during_finalize_saves_once(qtbot, controller, tmp_path):
     files = list((tmp_path / "out").glob("*.mp4"))
     assert len(files) == 1, files
     assert not list((tmp_path / "out").glob(".*vcam-tmp*"))
+
+
+def test_silent_system_audio_warns_during_recording_and_notes_result(qtbot, tmp_path, ffmpeg):
+    """2026-11-09 회귀: 루프백이 소리가 지나가지 않는 장치에 붙어 3개 녹화가 모두 무음이었다.
+    녹화 중 몇 초째 디지털 무음이면 사용자에게 알리고, 결과에도 표시한다."""
+    silent = AudioService(lambda kind, _d: FakeAudioSource(channels=2, amplitude=0.0))
+    c = make_controller(tmp_path, audio=silent, mic=False)
+    c._silence.hold_s = 1.0  # 테스트를 짧게: 기본값 5초
+    notices, metrics = [], []
+    c.notice.connect(notices.append)
+    c.metrics_changed.connect(metrics.append)
+    try:
+        c.start()
+        qtbot.waitUntil(lambda: c.state is RecordingState.RECORDING, timeout=10_000)
+        qtbot.waitUntil(lambda: any(m.audio_silent for m in metrics), timeout=6_000)
+        assert any(n.startswith("시스템 소리가 몇 초째 전혀 잡히지 않습니다") for n in notices)
+        assert metrics[0].audio_silent is False, "녹화 시작 직후에는 경고하지 않는다"
+        with qtbot.waitSignal(c.recording_saved, timeout=30_000) as saved:
+            c.stop()
+        result = saved.args[0]
+        assert any("소리가 전혀 잡히지 않은 구간" in n for n in result.notes)
+        assert result.media.audio_codec == "aac", "무음이어도 트랙은 그대로 저장한다"
+    finally:
+        c.shutdown()
+
+
+def test_audible_system_audio_never_warns(qtbot, controller):
+    controller._silence.hold_s = 0.5
+    metrics = []
+    controller.metrics_changed.connect(metrics.append)
+    controller.start()
+    qtbot.waitUntil(lambda: controller.state is RecordingState.RECORDING, timeout=10_000)
+    qtbot.wait(1500)
+    with qtbot.waitSignal(controller.recording_saved, timeout=30_000) as saved:
+        controller.stop()
+    assert metrics and not any(m.audio_silent for m in metrics)
+    assert not any("소리가 전혀 잡히지 않은 구간" in n for n in saved.args[0].notes)
+
+
+def _static_screen(monkeypatch, moving=False):
+    from vcam.capture.base import FakeCaptureBackend
+    from vcam.services import recording_controller as rc
+
+    def opener(_pref, rect):
+        backend = FakeCaptureBackend(moving=moving)
+        backend.open(rect)
+        return backend
+
+    monkeypatch.setattr(rc, "open_capture_backend", opener)
+
+
+def _record_idle(qtbot, tmp_path, monkeypatch, *, moving, amplitude, wait_ms=None):
+    _static_screen(monkeypatch, moving=moving)
+    audio = AudioService(lambda kind, _d: FakeAudioSource(channels=2, amplitude=amplitude))
+    c = make_controller(tmp_path, audio=audio, mic=False)
+    c.update_settings(replace(c.settings, auto_stop_idle=True, auto_stop_idle_s=2))
+    return c
+
+
+def test_auto_stop_when_screen_and_sound_are_still(qtbot, tmp_path, ffmpeg, monkeypatch):
+    c = _record_idle(qtbot, tmp_path, monkeypatch, moving=False, amplitude=0.0)
+    metrics, notices = [], []
+    c.metrics_changed.connect(metrics.append)
+    c.notice.connect(notices.append)
+    try:
+        with qtbot.waitSignal(c.recording_saved, timeout=30_000) as saved:
+            c.start()  # stop()을 부르지 않아도 스스로 끝나야 한다
+        result = saved.args[0]
+        assert any("자동으로 녹화를 마쳤습니다" in n for n in result.notes)
+        assert any("자동으로 마칩니다" in n for n in notices)
+        assert any(m.idle_stop_in_s is not None for m in metrics), "끝나기 전 남은 시간을 보여 준다"
+        assert 1.5 <= result.media.duration_s <= 6.0
+    finally:
+        c.shutdown()
+
+
+@pytest.mark.parametrize(("moving", "amplitude"), [(True, 0.0), (False, 0.3)], ids=["moving-screen", "audible"])
+def test_no_auto_stop_while_anything_changes(qtbot, tmp_path, ffmpeg, monkeypatch, moving, amplitude):
+    c = _record_idle(qtbot, tmp_path, monkeypatch, moving=moving, amplitude=amplitude)
+    try:
+        c.start()
+        qtbot.waitUntil(lambda: c.state is RecordingState.RECORDING, timeout=10_000)
+        qtbot.wait(4000)
+        assert c.state is RecordingState.RECORDING
+        with qtbot.waitSignal(c.recording_saved, timeout=30_000) as saved:
+            c.stop()
+        assert not any("자동으로" in n for n in saved.args[0].notes)
+    finally:
+        c.shutdown()
+
+
+def test_auto_stop_off_by_default(qtbot, tmp_path, ffmpeg, monkeypatch):
+    _static_screen(monkeypatch)
+    c = make_controller(tmp_path, audio=AudioService(lambda k, _d: FakeAudioSource(amplitude=0.0)), mic=False)
+    assert c.settings.auto_stop_idle is False
+    c.settings = replace(c.settings, auto_stop_idle_s=1)
+    try:
+        c.start()
+        qtbot.waitUntil(lambda: c.state is RecordingState.RECORDING, timeout=10_000)
+        qtbot.wait(3000)
+        assert c.state is RecordingState.RECORDING
+    finally:
+        c.shutdown()

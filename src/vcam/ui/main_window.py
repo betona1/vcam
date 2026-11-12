@@ -20,6 +20,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QToolButton,
@@ -54,9 +56,16 @@ from vcam.encoding.ffmpeg import find_ffmpeg
 from vcam.platform.windows.dpi import ScreenMapper
 from vcam.platform.windows.hotkeys import HotkeyManager
 from vcam.services.profile_service import ProfileService, Settings
-from vcam.services.recording_controller import BLACK_SCREEN_NOTICE, RecordingController
+from vcam.services.recording_controller import (
+    AUTO_STOP_NOTE,
+    BLACK_SCREEN_NOTICE,
+    SILENT_AUDIO_NOTE,
+    SILENT_AUDIO_NOTICE,
+    RecordingController,
+)
 from vcam.services.recording_pipeline import BLACK_SCREEN_NOTE
 from vcam.services.recovery_service import find_incomplete_sessions
+from vcam.services.update_service import install_dir, sync_installed_version
 from vcam.subtitles.pipeline import EngineCache
 from vcam.subtitles.transcriber import availability as subtitle_availability
 from vcam.ui import icons
@@ -76,12 +85,26 @@ from vcam.ui.updater import PreparedUpdate, Updater
 from vcam.ui.widgets.audio_meter import AudioMeter
 from vcam.ui.widgets.guide_frame import GuideFrame
 from vcam.ui.widgets.preview import PreviewSampler, PreviewView
-from vcam.ui.widgets.recent_recordings import RecentRecordings, reveal_in_explorer
+from vcam.ui.widgets.recent_recordings import (
+    RecentRecordings,
+    RecordingsLibraryDialog,
+    reveal_in_explorer,
+)
 from vcam.ui.widgets.recording_bar import CountdownOverlay, RecordingBar
 from vcam.ui.widgets.region_overlay import RegionSelector
 from vcam.util.paths import assets_dir, format_bytes, format_duration, logs_dir
 
 log = logging.getLogger(__name__)
+
+
+def _alert_beep() -> None:
+    """녹화 중 이상 상태 경고음. Windows 시스템 경고음을 비동기로 울리고, 안 되면 Qt 기본 비프."""
+    try:
+        import winsound
+
+        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+    except (ImportError, RuntimeError):
+        QApplication.beep()
 
 STATE_TEXT = {
     RecordingState.IDLE: ("대상 선택 필요", "info", "muted"),
@@ -113,9 +136,12 @@ class MainWindow(QMainWindow):
         self.controller = RecordingController(settings, self)
         self._themed: list[tuple[object, str, str]] = []  # (위젯/액션, 아이콘 이름, 색 토큰)
         self._last_result: RecordingResult | None = None
+        self._silence_alerted = False  # 이번 무음 구간에 대해 경고음을 이미 냈는지
         self.editor: EditorWindow | None = None
         self.subtitle_dialog: SubtitleDialog | None = None
         self.download_dialog: DownloadDialog | None = None
+        self.library_dialog: RecordingsLibraryDialog | None = None
+        self._deferred_update: tuple[object, bool] | None = None  # 녹화 중에 찾은 새 버전 — 녹화가 끝나면 묻는다
         self._subtitle_cache = EngineCache()  # Whisper 모델은 앱이 켜져 있는 동안 한 번만 불러온다
         self._screens_dirty = False
         self._selector: RegionSelector | None = None
@@ -123,8 +149,12 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("vCAM")
         self.setWindowIcon(QIcon(str(assets_dir() / "icons" / "vcam.ico")))
-        self.resize(1100, 780)
         self.setMinimumSize(900, 680)
+        avail = QGuiApplication.primaryScreen().availableGeometry() if QGuiApplication.primaryScreen() else None
+        width, height = 1240, 940
+        if avail is not None:
+            width, height = min(width, avail.width() - 40), min(height, avail.height() - 40)
+        self.resize(max(900, width), max(680, height))
 
         self.guide = GuideFrame(self.p, self.mapper)
         self.guide.region_changed.connect(self._on_guide_changed)
@@ -176,20 +206,17 @@ class MainWindow(QMainWindow):
         QGuiApplication.instance().screenRemoved.connect(lambda _s: self._on_screens_changed())
         QGuiApplication.styleHints().colorSchemeChanged.connect(lambda _s: self._on_system_theme())
         self.updater = Updater(self)
+        self.updater.found.connect(self._on_update_found)
         self.updater.prepared.connect(self._on_update_prepared)
-        self.updater.available.connect(self._on_update_available)
         self.updater.up_to_date.connect(
             lambda v: QMessageBox.information(self, "업데이트 확인", f"최신 버전(v{v})을 사용하고 있습니다.")
         )
-        self.updater.failed.connect(lambda msg: QMessageBox.warning(self, "업데이트 확인", msg))
-        self.updater.progress.connect(
-            lambda pct: self.statusBar().showMessage(f"새 버전 내려받는 중… {pct}%", 2000)
-        )
+        self.updater.failed.connect(self._on_update_failed)
+        self.updater.progress.connect(self._on_update_progress)
+        self._update_progress: QProgressDialog | None = None
         self._apply_update_on_exit: PreparedUpdate | None = None
         self._restart_after_update = False
         QTimer.singleShot(300, self._startup_checks)
-        if self.settings.auto_update:
-            QTimer.singleShot(5000, lambda: self.updater.check(manual=False))
 
     # ── 구성 ───────────────────────────────────────────────────────────────
     def _themed_icon(self, target, name: str, color: str = "text") -> None:
@@ -388,6 +415,17 @@ class MainWindow(QMainWindow):
         info.addLayout(grid)
 
         self._build_audio_section(info)
+        self.auto_stop_check = QCheckBox(f"화면·소리가 {self.settings.auto_stop_idle_s}초간 그대로면 자동 종료")
+        self.auto_stop_check.setToolTip(
+            f"녹화 중 화면이 {self.settings.auto_stop_idle_s}초 이상 바뀌지 않고, 켜 둔 시스템 소리·마이크에서도 소리가 나지 않으면 "
+            "녹화를 자동으로 마치고 저장합니다.\n끝나기 10초 전부터 녹화 바에 남은 시간이 표시되며, 그 사이 화면이 움직이거나 "
+            "소리가 나면 취소됩니다. 일시정지 중에는 세지 않습니다."
+        )
+        self.auto_stop_check.setChecked(self.settings.auto_stop_idle)
+        self.auto_stop_check.toggled.connect(
+            lambda on: self._save_settings(replace(self.settings, auto_stop_idle=on))
+        )
+        info.addWidget(self.auto_stop_check)
         self.ffmpeg_warning = QPushButton("FFmpeg를 찾을 수 없습니다 — 진단 열기")
         self.ffmpeg_warning.clicked.connect(self.open_diagnostics)
         self.ffmpeg_warning.hide()
@@ -416,13 +454,19 @@ class MainWindow(QMainWindow):
         rh.addWidget(self._tool("folder", "폴더에서 보기", self._reveal_selected, size=18))
         rh.addWidget(self._tool("trash", "휴지통으로 이동", lambda: self.recent.trash(), size=18))
         rh.addWidget(self._tool("refresh", "새로 고침", self.refresh_recent, size=18))
+        all_btn = self._tool("fullscreen", "전체 목록을 큰 창으로 보기", self.open_library, size=18)
+        all_btn.setText("목록 보기")
+        all_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        rh.addWidget(all_btn)
         recent_layout.addLayout(rh)
         self.recent = RecentRecordings(self.p)
         self.recent.count_changed.connect(lambda n: self.recent_count.setText(str(n)))
         self.recent.edit_requested.connect(lambda path: self.open_editor([path]))
         self.recent.subtitles_requested.connect(lambda path: self.open_subtitles([path]))
+        self.recent.trashed.connect(lambda _p: self._refresh_library())
+        self.recent.setMinimumHeight(200)
         recent_layout.addWidget(self.recent)
-        outer.addWidget(recent_card, 2)
+        outer.addWidget(recent_card, 3)
 
         # 하단 바
         bottom = QFrame()
@@ -516,6 +560,8 @@ class MainWindow(QMainWindow):
         icons.pixmap.cache_clear()
         for w in (self.preview, self.recent, self.guide, *self.meters.values()):
             w.set_palette(self.p)
+        if self.library_dialog is not None:
+            self.library_dialog.set_palette(self.p)
         self.bar.apply_palette(self.p)
         if self.editor is not None:
             self.editor.set_palette(self.p)
@@ -848,6 +894,27 @@ class MainWindow(QMainWindow):
 
     def refresh_recent(self) -> None:
         self.recent.refresh(Path(self.settings.output_dir), find_ffmpeg(self.settings.ffmpeg_path))
+        self._refresh_library()
+
+    def _refresh_library(self) -> None:
+        if self.library_dialog is not None and self.library_dialog.isVisible():
+            self.library_dialog.set_source(Path(self.settings.output_dir), find_ffmpeg(self.settings.ffmpeg_path))
+
+    def open_library(self) -> None:
+        """작업 폴더의 모든 파일을 큰 썸네일로 보여 주는 창. 이미 열려 있으면 앞으로 가져온다."""
+        if self.library_dialog is None:
+            dialog = RecordingsLibraryDialog(self.p, Path(self.settings.output_dir), find_ffmpeg(self.settings.ffmpeg_path), self)
+            dialog.edit_requested.connect(lambda path: self.open_editor([path]))
+            dialog.subtitles_requested.connect(lambda path: self.open_subtitles([path]))
+            dialog.trashed.connect(lambda _p: self.recent.refresh(Path(self.settings.output_dir), find_ffmpeg(self.settings.ffmpeg_path)))
+            screen = self.screen().availableGeometry()
+            dialog.resize(min(1100, screen.width() - 80), min(800, screen.height() - 80))
+            self.library_dialog = dialog
+        else:
+            self._refresh_library()
+        self.library_dialog.show()
+        self.library_dialog.raise_()
+        self.library_dialog.activateWindow()
 
     def _reveal_selected(self) -> None:
         path = self.recent.selected_path()
@@ -905,6 +972,11 @@ class MainWindow(QMainWindow):
             show_consent_notice(self)
             self.settings = self.profiles.update(self.settings, first_run_notice_ack=True)
         self.open_recovery()
+        if install_dir() is not None:
+            sync_installed_version()
+        if self.settings.auto_update:
+            # 첫 실행 안내·복구 창이 닫힌 뒤에 묻도록 여기서 시작한다
+            QTimer.singleShot(3000, lambda: self.updater.check(manual=False))
 
     # ── 녹화 상태 반영 ─────────────────────────────────────────────────────
     def _capture_area_logical(self):
@@ -916,6 +988,10 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_state(self, state: RecordingState) -> None:
         self._update_state_widgets(state)
+        if self._deferred_update is not None and not self.controller.is_busy:
+            release, installable = self._deferred_update
+            self._deferred_update = None
+            QTimer.singleShot(1500, lambda: self._on_update_found(release, installable, False))
         area = self._capture_area_logical()
         src = self.controller.source
         recording = state in (RecordingState.RECORDING, RecordingState.PAUSED)
@@ -1005,7 +1081,19 @@ class MainWindow(QMainWindow):
         elapsed = format_duration(m.elapsed_ns / 1e9)
         self.timer_label.setText(elapsed)
         self.bar.set_elapsed(elapsed)
-        self.bar.set_warning("검은 화면" if m.black_screen else None, BLACK_SCREEN_NOTICE)
+        warnings = [("검은 화면", BLACK_SCREEN_NOTICE)] if m.black_screen else []
+        if m.audio_silent:
+            warnings.append(("소리 없음", SILENT_AUDIO_NOTICE))
+        if m.idle_stop_in_s is not None:
+            warnings.append((f"자동 종료 {m.idle_stop_in_s:.0f}초 전",
+                             "화면과 소리에 변화가 없어 곧 녹화를 자동으로 마칩니다. 계속하려면 화면을 움직이거나 소리를 내세요."))  # fmt: skip
+        self.bar.set_warning(" · ".join(t for t, _ in warnings) or None, "\n\n".join(tip for _, tip in warnings))
+        if m.audio_silent and not self._silence_alerted:
+            # 창이 트레이/최소화 상태일 수 있으므로 소리로도 알린다. 상태 표시줄 안내는 컨트롤러 notice가 띄운다.
+            self._silence_alerted = True
+            _alert_beep()
+        elif not m.audio_silent:
+            self._silence_alerted = False
         if self.guide.isVisible() and self.controller.state is RecordingState.RECORDING:
             self.guide.set_status(f"REC {elapsed}")
         elif self.guide.isVisible() and self.controller.state is RecordingState.PAUSED:
@@ -1028,14 +1116,24 @@ class MainWindow(QMainWindow):
         self.result_edit.show()
         self.result_subtitles.show()
         parts = [f"드롭 {result.frames_dropped}"] if result.frames_dropped else []
+        tips = []
         if BLACK_SCREEN_NOTE in result.notes:
             parts.append("⚠ 검은 화면 구간 있음")
-            self.metrics_label.setToolTip(BLACK_SCREEN_NOTICE)
-        else:
-            self.metrics_label.setToolTip("")
+            tips.append(BLACK_SCREEN_NOTICE)
+        if SILENT_AUDIO_NOTE in result.notes:
+            parts.append("⚠ 소리 없는 구간 있음")
+            tips.append(SILENT_AUDIO_NOTICE)
+        if AUTO_STOP_NOTE in result.notes:
+            parts.append("자동 종료됨")
+            tips.append(AUTO_STOP_NOTE)
+        self.metrics_label.setToolTip("\n\n".join(tips))
         self.metrics_label.setText("  ·  ".join(parts))
         if BLACK_SCREEN_NOTE in result.notes:
             self.statusBar().showMessage(f"저장했지만 화면이 검게 기록된 구간이 있습니다: {result.path.name}", 15000)
+        elif AUTO_STOP_NOTE in result.notes:
+            self.statusBar().showMessage(f"변화가 없어 자동으로 녹화를 마치고 저장했습니다: {result.path.name}", 15000)
+        elif SILENT_AUDIO_NOTE in result.notes:
+            self.statusBar().showMessage(f"저장했지만 시스템 소리가 잡히지 않은 구간이 있습니다: {result.path.name}", 15000)
         else:
             self.statusBar().showMessage(f"녹화를 저장했습니다: {result.path}", 10000)
         self.refresh_recent()
@@ -1149,8 +1247,73 @@ class MainWindow(QMainWindow):
     def open_manual(self) -> None:
         QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}/blob/main/docs/USER_GUIDE.md"))
 
-    @Slot(object)
-    def _on_update_available(self, release) -> None:
+    @Slot(object, bool, bool)
+    def _on_update_found(self, release, installable: bool, manual: bool) -> None:
+        """새 버전이 있으면 먼저 묻는다. '업데이트'를 고르면 내려받고 vCAM을 다시 시작해 설치한다."""
+        if not manual and release.version == self.settings.skipped_update_version:
+            log.info("건너뛰기로 한 버전 %s — 묻지 않음", release.version)
+            return
+        if not installable:
+            self._show_manual_update(release)
+            return
+        if self.controller.is_busy:
+            # 녹화를 방해하지 않는다. 끝나면 _on_state에서 다시 묻는다.
+            self._deferred_update = (release, installable)
+            self.statusBar().showMessage(f"새 버전 v{release.version}이 있습니다. 녹화가 끝나면 업데이트할지 묻겠습니다.", 10000)
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("업데이트")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"업데이트가 있습니다: vCAM v{release.version} (현재 v{__version__})")
+        box.setInformativeText("업데이트하시겠습니까?\n새 버전을 내려받은 뒤 vCAM을 다시 시작해 자동으로 설치합니다. "
+                               "설정과 녹화 파일은 그대로 남습니다.")  # fmt: skip
+        notes = release.notes.strip()
+        if notes:
+            box.setDetailedText(notes[:4000])
+        yes_btn = box.addButton("업데이트", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
+        skip_btn = None if manual else box.addButton("이 버전 건너뛰기", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(yes_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if skip_btn is not None and clicked is skip_btn:
+            self._save_settings(replace(self.settings, skipped_update_version=release.version))
+            self.statusBar().showMessage(
+                f"v{release.version} 업데이트를 건너뜁니다. [도움말 → 업데이트 확인]으로 언제든 설치할 수 있습니다.", 8000
+            )
+            return
+        if clicked is not yes_btn:
+            return
+        if not self.updater.download(release):
+            QMessageBox.information(self, "업데이트", "이미 새 버전을 확인하거나 내려받는 중입니다. 잠시 후 다시 시도해 주세요.")
+            return
+        progress = QProgressDialog(f"vCAM v{release.version}을(를) 내려받는 중…", "", 0, 100, self)
+        progress.setWindowTitle("업데이트")
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+        progress.show()
+        self._update_progress = progress
+
+    def _close_update_progress(self) -> None:
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress.deleteLater()
+            self._update_progress = None
+
+    @Slot(int)
+    def _on_update_progress(self, pct: int) -> None:
+        if self._update_progress is not None:
+            self._update_progress.setValue(max(0, min(99, pct)))
+
+    @Slot(str)
+    def _on_update_failed(self, message: str) -> None:
+        self._close_update_progress()
+        QMessageBox.warning(self, "업데이트", f"{message}\n\n나중에 [도움말 → 업데이트 확인]으로 다시 시도할 수 있습니다.")
+
+    def _show_manual_update(self, release) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("새 버전")
         box.setIcon(QMessageBox.Icon.Information)
@@ -1164,24 +1327,17 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_update_prepared(self, update: PreparedUpdate) -> None:
+        """사용자가 이미 업데이트를 골랐으므로 곧바로 다시 시작해 설치한다. 그 사이 녹화를 시작했다면 끝난 뒤로 미룬다."""
+        self._close_update_progress()
         self._apply_update_on_exit = update
+        self._restart_after_update = True
         if self.controller.is_busy:
-            self.statusBar().showMessage(f"새 버전 v{update.release.version}이 준비되었습니다. 앱을 닫으면 설치됩니다.", 15000)
+            self.statusBar().showMessage(
+                f"새 버전 v{update.release.version}이 준비되었습니다. 녹화를 마치고 vCAM을 닫으면 설치됩니다.", 15000
+            )
             return
-        notes = update.release.notes.strip()
-        box = QMessageBox(self)
-        box.setWindowTitle("업데이트 준비됨")
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"새 버전 v{update.release.version}을(를) 내려받았습니다. (현재 v{__version__})")
-        box.setInformativeText("지금 다시 시작해 업데이트할까요? 나중을 고르면 앱을 닫을 때 설치합니다.")
-        if notes:
-            box.setDetailedText(notes[:4000])
-        now_btn = box.addButton("지금 업데이트", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is now_btn:
-            self._restart_after_update = True
-            self.close()
+        self.statusBar().showMessage(f"vCAM을 다시 시작해 v{update.release.version}을(를) 설치합니다…")
+        QTimer.singleShot(300, self.close)
 
     # ── 종료 ───────────────────────────────────────────────────────────────
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802

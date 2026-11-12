@@ -1,6 +1,7 @@
 """오디오 소스 하나를 읽는 스레드. 녹화 전에는 음량 미터만, 녹화 중에는 PCM 기록까지 한다.
 
-장치가 분리되거나 기본 장치가 바뀌면 제한된 횟수만 다시 연다(무제한 재시도 금지).
+장치가 분리되면 제한된 횟수만 다시 연다(무제한 재시도 금지). 기본 장치를 따르는 소스가
+Windows 기본 장치 변경(AudioDeviceChanged)을 알리면 장애로 세지 않고 즉시 새 장치를 연다.
 다시 여는 동안 빠진 구간은 AlignedPcmWriter가 무음으로 메운다.
 """
 
@@ -12,7 +13,7 @@ import time
 from collections.abc import Callable
 from enum import StrEnum
 
-from vcam.audio.base import AudioError, AudioKind, AudioSource
+from vcam.audio.base import AudioDeviceChanged, AudioError, AudioKind, AudioSource
 from vcam.audio.meter import LevelMeter
 from vcam.audio.track_writer import AlignedPcmWriter
 
@@ -45,6 +46,7 @@ class AudioWorker:
         self._error = ""
         self.muted = False
         self.device_name = ""
+        self.device_changes = 0  # 기본 장치를 따라 다시 연 횟수(진단·테스트용)
         self.samplerate = 0
         self.channels = 0
         self._opened = threading.Event()
@@ -115,6 +117,11 @@ class AudioWorker:
             opened_at = time.monotonic()
             try:
                 self._pump(source)
+            except AudioDeviceChanged as exc:
+                # 장애가 아니다: 상태는 OK로 둔 채 곧바로 새 기본 장치를 연다. 열기에 실패하면 위의 재시도 경로를 탄다.
+                log.info("%s 오디오 장치 변경, 다시 엽니다: %s", self.kind, exc)
+                self.meter.reset()
+                self.device_changes += 1
             except AudioError as exc:
                 # 한동안 잘 동작했다면 새 장애로 보고 횟수를 초기화한다. 계속 실패하는 장치는 여전히 포기한다.
                 if time.monotonic() - opened_at >= STABLE_RESET_S:

@@ -21,6 +21,10 @@ class AudioError(Exception):
     pass
 
 
+class AudioDeviceChanged(AudioError):
+    """기본 장치를 따르는 소스가 Windows 기본 장치 변경을 감지했다. 장애가 아니므로 즉시 다시 연다."""
+
+
 @dataclass(frozen=True)
 class AudioDevice:
     id: str  # 빈 문자열 = 시스템 기본 장치
@@ -42,7 +46,8 @@ class AudioSource(Protocol):
 
 
 class FakeAudioSource:
-    """사인파를 실시간 속도로 내보낸다. rate_skew로 장치 시계 오차를, fail_after로 장치 분리를 흉내 낸다."""
+    """사인파를 실시간 속도로 내보낸다. rate_skew로 장치 시계 오차를, fail_after로 장치 분리를,
+    switch_after_blocks로 기본 장치 변경을 흉내 낸다."""
 
     def __init__(
         self,
@@ -52,6 +57,7 @@ class FakeAudioSource:
         rate_skew: float = 0.0,
         fail_after_blocks: int | None = None,
         samplerate: int = SAMPLE_RATE,
+        switch_after_blocks: int | None = None,
     ) -> None:
         self.samplerate = samplerate
         self.channels = channels
@@ -60,6 +66,7 @@ class FakeAudioSource:
         self._amp = amplitude
         self._skew = rate_skew
         self._fail_after = fail_after_blocks
+        self._switch_after = switch_after_blocks
         self._blocks = 0
         self._phase = 0
         self._next_ns = 0
@@ -71,6 +78,8 @@ class FakeAudioSource:
         self._blocks += 1
         if self._fail_after is not None and self._blocks > self._fail_after:
             raise AudioError("가짜 오디오 장치가 분리되었습니다")
+        if self._switch_after is not None and self._blocks > self._switch_after:
+            raise AudioDeviceChanged("가짜 기본 장치가 바뀌었습니다")
         # 장치 시계가 빠르면(rate_skew>0) 같은 블록이 실제보다 짧은 시간에 도착한다.
         self._next_ns += int(BLOCK_FRAMES / self.samplerate * 1e9 / (1.0 + self._skew))
         delay = (self._next_ns - time.perf_counter_ns()) / 1e9

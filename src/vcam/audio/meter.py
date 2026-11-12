@@ -1,4 +1,8 @@
-"""음량 측정. dBFS로 표현하며 무음은 SILENCE_DB로 고정한다."""
+"""음량 측정. dBFS로 표현하며 무음은 SILENCE_DB로 고정한다.
+
+SilenceWatch는 녹화 중 시스템 소리가 계속 디지털 무음인지 지켜본다. 루프백이 소리가 지나가지 않는
+장치(예: 쓰지 않는 광출력)에 붙어 있으면 완전한 0만 들어오므로, 이를 사용자에게 알리는 근거가 된다.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,9 @@ from dataclasses import dataclass
 import numpy as np
 
 SILENCE_DB = -90.0
+# 이보다 작은 피크는 디지털 무음으로 본다(실제 재생 중인 소리는 아무리 작아도 이 값 위에 있다).
+DIGITAL_SILENCE_DB = -89.0
+SILENCE_WARN_S = 5.0
 
 
 def block_levels(block: np.ndarray) -> tuple[float, float]:
@@ -52,3 +59,29 @@ class LevelMeter:
     def read(self) -> Level:
         with self._lock:
             return self._level
+
+
+class SilenceWatch:
+    """피크가 hold_s 동안 계속 디지털 무음이면 True. GUI 스레드에서 주기적으로 update()한다.
+    일시정지·장치 재연결처럼 무음이 정상인 구간에서는 reset()해 세지 않는다."""
+
+    def __init__(self, hold_s: float = SILENCE_WARN_S, threshold_db: float = DIGITAL_SILENCE_DB) -> None:
+        self.hold_s = hold_s
+        self.threshold_db = threshold_db
+        self._since: float | None = None
+
+    def update(self, peak_db: float, now: float) -> bool:
+        if peak_db > self.threshold_db:
+            self._since = None
+            return False
+        if self._since is None:
+            self._since = now
+        return now - self._since >= self.hold_s
+
+    @property
+    def since(self) -> float | None:
+        """조용해지기 시작한 시각(update에 넘긴 now 기준). 소리가 나는 중이면 None."""
+        return self._since
+
+    def reset(self) -> None:
+        self._since = None

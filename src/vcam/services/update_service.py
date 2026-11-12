@@ -274,3 +274,32 @@ def launch_apply(
     )  # fmt: skip
     log.info("업데이트 적용 스크립트 실행 (재시작=%s)", restart)
     return proc
+
+
+# Inno Setup 설치본의 제거 정보(packaging/vcam.iss의 AppId). 사용자 권한 설치라 HKCU에 있다.
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{79A29413-64D6-45FF-9040-4F24174B655E}_is1"
+
+
+def sync_installed_version(version: str = __version__, key_path: str = UNINSTALL_KEY) -> bool:
+    """자동 업데이트는 설치 프로그램을 거치지 않으므로, '앱 및 기능'에 보이는 버전을 실행 중인 버전에 맞춘다.
+    설치 프로그램으로 설치하지 않았으면(키 없음) 아무것도 하지 않는다. 바꿨으면 True."""
+    if os.name != "nt":
+        return False
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            try:
+                current = winreg.QueryValueEx(key, "DisplayVersion")[0]
+            except FileNotFoundError:
+                current = ""
+            if current == version:
+                return False
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, version)
+            log.info("설치 정보 버전 갱신: %s → %s", current or "-", version)
+            return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        log.warning("설치 정보 버전을 갱신하지 못했습니다: %s", exc)
+        return False

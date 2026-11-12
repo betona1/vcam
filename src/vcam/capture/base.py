@@ -28,12 +28,13 @@ class CaptureBackend(Protocol):
 
 
 class FakeCaptureBackend:
-    """실제 장치 없이 파이프라인을 시험하기 위한 움직이는 그라디언트 프레임."""
+    """실제 장치 없이 파이프라인을 시험하기 위한 그라디언트 프레임. moving=False면 매번 같은 화면(멈춘 화면)."""
 
     name = "fake"
 
-    def __init__(self, fail_after: int | None = None) -> None:
+    def __init__(self, fail_after: int | None = None, moving: bool = True) -> None:
         self._fail_after = fail_after
+        self._moving = moving
         self._count = 0
         self._base: np.ndarray | None = None
 
@@ -54,7 +55,8 @@ class FakeCaptureBackend:
         if self._fail_after is not None and self._count > self._fail_after:
             raise CaptureError("가짜 캡처 백엔드 오류")
         frame = self._base.copy()
-        frame[..., 2] = (self._count * 8) % 256
+        if self._moving:
+            frame[..., 2] = (self._count * 8) % 256
         return frame
 
     def close(self) -> None:

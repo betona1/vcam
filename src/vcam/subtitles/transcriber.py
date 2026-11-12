@@ -183,8 +183,6 @@ def model_size_gb(name: str) -> float:
 
 def load_model(name: str, device: str = "auto", allow_download: bool = False, log_fn: Callable[[str], None] | None = None):
     """WhisperModel을 만든다. GPU 초기화가 실패하면 CPU로 한 번 더 시도한다. (model, device) 반환."""
-    from faster_whisper import WhisperModel  # noqa: PLC0415
-
     repo = MODELS.get(name, (name, "", 0.0))[0]
     dev, compute = resolve_device(device)
     if dev == "cuda":
@@ -196,6 +194,7 @@ def load_model(name: str, device: str = "auto", allow_download: bool = False, lo
             f"음성 인식 모델 '{name}'이(가) PC에 없습니다 (약 {model_size_gb(name):.1f} GB).\n"
             "'모델이 없으면 내려받기'를 켜면 HuggingFace에서 받아 옵니다."
         )
+    from faster_whisper import WhisperModel  # noqa: PLC0415 - 모델 확인 뒤에 무거운 import
     if log_fn:
         log_fn(f"모델 불러오는 중: {name} ({dev}, {compute})" + ("" if cached else " - 다운로드 중…"))
     attempts = [(dev, compute)]

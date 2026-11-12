@@ -9,11 +9,13 @@ from __future__ import annotations
 import logging
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
+from vcam.audio.meter import SilenceWatch
 from vcam.audio.track_writer import AudioTrack
 from vcam.audio.worker import WorkerStatus
 from vcam.capture.factory import open_capture_backend
@@ -51,6 +53,17 @@ BLACK_SCREEN_NOTICE = (
     "보호되지 않은 창이나 영역을 녹화하고 있는지 확인해 주세요."
 )
 
+SILENT_AUDIO_NOTICE = (
+    "시스템 소리가 몇 초째 전혀 잡히지 않습니다. 지금 PC에서 소리가 나고 있다면 vCAM이 녹음하는 장치와 실제로 소리가 나는 "
+    "장치가 다른 것입니다. 메인 창에서 시스템 소리 장치를 소리가 나는 장치로 바꾸거나, 녹화를 멈추고 vCAM을 다시 시작해 주세요."
+)
+SILENT_AUDIO_NOTE = "시스템 소리가 전혀 잡히지 않은 구간이 있습니다. 녹음 장치가 실제 재생 장치와 달랐을 수 있습니다."
+
+# 자동 종료: 이 값보다 작은 피크는 '소리가 나지 않음'으로 본다. 디지털 무음보다 넉넉해 마이크 잡음은 무시한다.
+IDLE_QUIET_DB = -50.0
+IDLE_STOP_WARN_S = 10.0  # 종료 이만큼 전부터 남은 시간을 보여 준다
+AUTO_STOP_NOTE = "화면과 소리에 변화가 없어 자동으로 녹화를 마쳤습니다. 끝부분의 멈춘 구간은 편집기에서 잘라낼 수 있습니다."
+
 MIN_START_FREE_BYTES = 1024**3
 
 
@@ -76,6 +89,12 @@ class RecordingController(QObject):
         self.audio = audio or AudioService()
         self._tracks: list[AudioTrack] = []
         self._audio_status: dict[str, WorkerStatus | None] = {}
+        self._audio_device: dict[str, str] = {}
+        self._silence = SilenceWatch()
+        self._silence_notified = False
+        self._silence_seen = False
+        self._quiet = SilenceWatch(threshold_db=IDLE_QUIET_DB)
+        self._auto_stopped = False
         self._finalize_thread: threading.Thread | None = None
         self._prepare_gen = 0
         self.machine = StateMachine()
@@ -135,12 +154,23 @@ class RecordingController(QObject):
 
     @Slot()
     def _check_audio_status(self) -> None:
-        """장치 분리·재연결을 사용자에게 알린다."""
+        """장치 분리·재연결과 기본 장치 변경을 사용자에게 알린다."""
         for kind, label in TRACK_LABELS.items():
             status = self.audio.status(kind)
             previous = self._audio_status.get(kind)
             self._audio_status[kind] = status
-            if status is previous or status is None:
+            worker = self.audio.worker(kind)
+            device = worker.device_name if worker and status is WorkerStatus.OK else ""
+            previous_device = self._audio_device.get(kind, "")
+            if device:
+                self._audio_device[kind] = device
+            elif status is None:
+                self._audio_device.pop(kind, None)
+            if status is previous:
+                if device and previous_device and device != previous_device:
+                    self.notice.emit(f"{label}를 이제 '{device}' 장치에서 녹음합니다.")
+                continue
+            if status is None:
                 continue
             if status is WorkerStatus.RECONNECTING:
                 self.notice.emit(f"{label} 장치 연결이 끊겨 다시 연결하는 중입니다. 끊긴 구간은 무음으로 채웁니다.")
@@ -370,6 +400,11 @@ class RecordingController(QObject):
             return
         self._fire(Command.ELAPSED)
         self._black_notified = False
+        self._silence.reset()
+        self._silence_notified = False
+        self._silence_seen = False
+        self._quiet.reset()
+        self._auto_stopped = False
         self._metrics_timer.start()
 
     # ── 마무리 ──────────────────────────────────────────────────────────────
@@ -452,10 +487,13 @@ class RecordingController(QObject):
             return
         if self.state is RecordingState.RECOVERING:
             self._fire(Command.RECOVERED)
+        extra_notes = [SILENT_AUDIO_NOTE] if self._silence_seen else []
+        if self._auto_stopped:
+            extra_notes.append(AUTO_STOP_NOTE)
         self.recording_saved.emit(RecordingResult(
             path=media.path, media=media, encoder=outcome.encoder,
             frames_dropped=outcome.frames_dropped, recovered=recovering,
-            notes=(*outcome.notes, *result.get("notes", [])),
+            notes=(*outcome.notes, *result.get("notes", []), *extra_notes),
         ))  # fmt: skip
 
     def _cleanup_unused_session(self) -> None:
@@ -472,14 +510,79 @@ class RecordingController(QObject):
             size = self._pipeline.config.partial_path.stat().st_size
         except OSError:
             size = 0
+        silent = self._update_silence()
+        stop_in = self._idle_stop_in(metrics.still_ns)
         self.metrics_changed.emit(RecordingMetrics(
             elapsed_ns=metrics.elapsed_ns, frames_written=metrics.frames_written,
             frames_dropped=metrics.frames_dropped, measured_fps=metrics.measured_fps,
-            file_bytes=size, encoder=metrics.encoder, black_screen=metrics.black_screen,
+            file_bytes=size, encoder=metrics.encoder, black_screen=metrics.black_screen, audio_silent=silent,
+            still_ns=metrics.still_ns, idle_stop_in_s=stop_in if stop_in is not None and stop_in <= IDLE_STOP_WARN_S else None,
         ))  # fmt: skip
+        if stop_in is not None and stop_in <= 0:
+            self._auto_stop()
+            return
         if metrics.black_screen and not self._black_notified:
             self._black_notified = True
             self.notice.emit(BLACK_SCREEN_NOTICE)
+        if silent and not self._silence_notified:
+            self._silence_notified = self._silence_seen = True
+            log.warning("시스템 소리가 %.0f초 이상 디지털 무음입니다 (장치: %s)", self._silence.hold_s, self._audio_device.get("system", "?"))
+            self.notice.emit(SILENT_AUDIO_NOTICE)
+        elif not silent and self._silence_notified:
+            self._silence_notified = False
+            self.notice.emit("시스템 소리가 다시 잡힙니다.")
+
+    def _update_silence(self) -> bool:
+        """녹화 중이고 시스템 소리 장치가 열려 있는데 소리가 계속 디지털 무음이면 True. 일시정지·재연결 중에는 세지 않는다."""
+        if (
+            self.state is not RecordingState.RECORDING
+            or not self.settings.profile.system_audio_enabled
+            or self.audio.status("system") is not WorkerStatus.OK
+        ):
+            self._silence.reset()
+            return False
+        level = self.audio.level("system")
+        if level is None:
+            self._silence.reset()
+            return False
+        return self._silence.update(level.peak_db, time.monotonic())
+
+    def _idle_stop_in(self, still_ns: int) -> float | None:
+        """자동 종료가 켜져 있으면 화면·소리가 멈춘 상태로 종료까지 남은 초. 무언가 움직이면 None."""
+        hold = float(self.settings.auto_stop_idle_s)
+        quiet_s = self._quiet_seconds()
+        if not self.settings.auto_stop_idle or self.state is not RecordingState.RECORDING or quiet_s is None:
+            return None
+        idle_s = min(still_ns / 1e9, quiet_s)
+        return max(0.0, hold - idle_s) if idle_s > 0 else None
+
+    def _quiet_seconds(self) -> float | None:
+        """켜져 있고 동작 중인 모든 소리 트랙이 조용했던 시간(초). 일시정지 중이거나 소리가 나면 0, 녹화 중이 아니면 None.
+        켜진 트랙이 없거나 모두 장치를 못 쓰는 상태면 소리는 조건에서 빠진다(화면만 본다)."""
+        if self.state is not RecordingState.RECORDING:
+            self._quiet.reset()
+            return None
+        peaks = []
+        for kind in TRACK_LABELS:
+            if self.audio.status(kind) is not WorkerStatus.OK:
+                continue
+            level = self.audio.level(kind)
+            if level is not None:
+                peaks.append(level.peak_db)
+        now = time.monotonic()
+        if not peaks:
+            return float("inf")
+        self._quiet.update(max(peaks), now)
+        since = self._quiet.since
+        return 0.0 if since is None else now - since
+
+    def _auto_stop(self) -> None:
+        if self._pipeline is None or self.state is not RecordingState.RECORDING:
+            return
+        log.info("화면과 소리가 %d초 동안 그대로여서 녹화를 자동 종료합니다", self.settings.auto_stop_idle_s)
+        self._auto_stopped = True
+        self.notice.emit(f"화면과 소리에 {self.settings.auto_stop_idle_s}초 동안 변화가 없어 녹화를 자동으로 마칩니다.")
+        self.stop()
 
     def shutdown(self, timeout: float = 30.0) -> None:
         """앱 종료 시 녹화 중이면 안전하게 마무리한다(GUI 스레드에서 블로킹)."""

@@ -9,15 +9,27 @@ from __future__ import annotations
 import ctypes
 import logging
 import threading
+import time
 import warnings
 
 import numpy as np
 
-from vcam.audio.base import BLOCK_FRAMES, SAMPLE_RATE, AudioDevice, AudioError, AudioKind
+from vcam.audio.base import (
+    BLOCK_FRAMES,
+    SAMPLE_RATE,
+    AudioDevice,
+    AudioDeviceChanged,
+    AudioError,
+    AudioKind,
+)
 
 log = logging.getLogger(__name__)
 
 RPC_E_CHANGED_MODE = 0x80010106
+# 기본 장치를 따르는 소스는 이 주기로 Windows 기본 장치가 바뀌었는지 확인한다.
+# 모니터 절전 등으로 장치가 잠시 사라졌다 돌아오면 루프백이 엉뚱한 장치(예: 광출력)에 남아
+# 무음만 녹음되는 일을 막는다.
+DEFAULT_CHECK_INTERVAL_S = 2.0
 
 
 def com_init_mta() -> None:
@@ -89,8 +101,13 @@ class WasapiSource:
         self.samplerate = SAMPLE_RATE
         self.channels = 2 if kind == "system" else 1
         self.device_name = ""
+        self._opened_id = ""
+        self._next_default_check = 0.0
         self._ctx = None
         self._recorder = None
+
+    def _default_getter(self, sc):
+        return sc.default_speaker if self.kind == "system" else sc.default_microphone
 
     def open(self) -> None:
         sc = _soundcard()
@@ -102,22 +119,38 @@ class WasapiSource:
                     raise AudioError("출력 장치가 없습니다")
                 device = sc.get_microphone(speaker.id, include_loopback=True)
                 self.device_name = speaker.name
+                self._opened_id = speaker.id
             else:
                 device = sc.get_microphone(self.device_id) if self.device_id else _safe_default(sc.default_microphone)
                 if device is None:
                     raise AudioError("연결된 마이크가 없습니다")
                 self.device_name = device.name
+                self._opened_id = device.id
             self._ctx = device.recorder(samplerate=self.samplerate, channels=self.channels, blocksize=BLOCK_FRAMES)
             self._recorder = self._ctx.__enter__()
         except AudioError:
             raise
         except Exception as exc:  # noqa: BLE001 - COM/WASAPI 오류 종류가 다양함
             raise AudioError(f"오디오 장치를 열지 못했습니다: {exc}") from exc
+        self._next_default_check = time.monotonic() + DEFAULT_CHECK_INTERVAL_S
         log.info("오디오 장치 열림: %s (%s, %dch)", self.device_name, self.kind, self.channels)
+
+    def _check_default_changed(self) -> None:
+        """기본 장치를 따르는 중이면 주기적으로 현재 기본 장치와 비교하고, 다르면 AudioDeviceChanged를 던진다."""
+        if self.device_id:
+            return
+        now = time.monotonic()
+        if now < self._next_default_check:
+            return
+        self._next_default_check = now + DEFAULT_CHECK_INTERVAL_S
+        current = _safe_default(self._default_getter(_soundcard()))
+        if current is not None and current.id != self._opened_id:
+            raise AudioDeviceChanged(f"기본 장치가 '{current.name}'(으)로 바뀌었습니다")
 
     def read(self) -> np.ndarray:
         if self._recorder is None:
             raise AudioError("오디오 장치가 열려 있지 않습니다")
+        self._check_default_changed()
         try:
             data = self._recorder.record(numframes=BLOCK_FRAMES)
         except Exception as exc:  # noqa: BLE001 - 장치 분리 시 COM 오류

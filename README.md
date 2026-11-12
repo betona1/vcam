@@ -31,7 +31,7 @@
 | ⇄ **형식 변환** | MP4 · MKV · WebM · AVI · MOV · WMV · FLV · M4V · TS · MPEG · GIF, 코덱(H.264 · HEVC · AV1 · VP9 · Xvid…) · 크기 · FPS · 품질 · 속도 · 회전, 일괄 처리 |
 | ⬇ **인터넷 영상 내려받기** | YouTube·TikTok·Instagram 등 주소를 붙여 넣으면 화질을 골라 MP4(또는 소리만 MP3)로 작업 폴더에 저장. 사이트 자막·재생목록 지원, 로그인이 필요한 영상은 브라우저 쿠키로, 받은 뒤 바로 편집·Whisper 자막 만들기 |
 | 💬 **자막 만들기 (SRT)** | 녹화한 영상을 PC 안의 Whisper 음성 인식으로 자막 파일로. 언어 자동 감지, NVIDIA GPU 가속, 오프라인 번역(M2M100)으로 한국어·영어·일본어·중국어 등 17개 언어 자막 추가. 자막 보기·수정 창 |
-| 🔄 **자동 업데이트** | 새 버전이 나오면 자동으로 내려받아 다시 시작할 때 설치 |
+| 🔄 **설치 프로그램 · 자동 업데이트** | `vcam-setup.exe` 하나로 설치. 새 버전이 나오면 "업데이트하시겠습니까?"를 묻고 내려받아 다시 시작하며 설치 |
 | 🌗 **라이트 / 다크 테마** | Windows 설정을 따르거나 직접 선택 |
 
 ![동영상 편집기](docs/images/editor_cut.png)
@@ -42,10 +42,11 @@
 
 ## 설치
 
-1. [**릴리스 페이지**](https://github.com/betona1/vcam/releases/latest)에서 `vcam-<버전>-win64.zip`을 내려받습니다.
-2. 원하는 곳(예: `C:\Tools`)에 압축을 풀고 `vcam\vcam.exe`를 실행합니다.
-   - 처음 실행할 때 Windows SmartScreen이 경고하면 **추가 정보 → 실행**을 누르세요(코드 서명이 아직 없습니다).
-   - `C:\Program Files`처럼 쓰기 권한이 없는 곳에 두면 자동 업데이트가 설치까지는 하지 못하고 안내만 합니다.
+1. [**릴리스 페이지**](https://github.com/betona1/vcam/releases/latest)에서 `vcam-setup-<버전>.exe`를 내려받아 실행합니다.
+   - 관리자 권한 없이 `%LOCALAPPDATA%\Programs\vCAM`에 설치되고 시작 메뉴(선택하면 바탕 화면)에 바로 가기가 생깁니다.
+   - Windows SmartScreen이 경고하면 **추가 정보 → 실행**을 누르세요(코드 서명이 아직 없습니다).
+   - 설치 없이 쓰려면 `vcam-<버전>-win64.zip`을 풀어 `vcam\vcam.exe`를 실행해도 됩니다.
+2. 설치가 끝나면 vCAM을 실행합니다.
 3. **FFmpeg**가 필요합니다. 명령 프롬프트에서 한 번만 실행하세요.
    ```
    winget install Gyan.FFmpeg
@@ -69,9 +70,11 @@
 ## 자동 업데이트
 
 앱은 시작할 때 이 저장소의 [최신 릴리스](https://github.com/betona1/vcam/releases/latest)를 확인합니다.
-새 버전이 있으면 백그라운드에서 내려받아 **SHA-256 체크섬을 검증**한 뒤 "지금 업데이트 / 나중에"를 묻습니다.
-설치는 앱이 종료된 뒤 별도 스크립트가 파일을 교체하며, 실패하면 이전 버전으로 되돌립니다.
-업데이트 확인 때 보내는 정보는 앱 버전뿐이며, **설정 → 새 버전을 자동으로 확인**에서 끌 수 있습니다.
+새 버전이 있으면 먼저 "업데이트가 있습니다. 업데이트하시겠습니까?"를 묻고(업데이트 / 나중에 / 이 버전 건너뛰기),
+**업데이트**를 고르면 내려받아 **SHA-256 체크섬을 검증**한 뒤 앱을 다시 시작하며 설치합니다. 묻기 전에는 내려받지 않습니다.
+설치는 앱이 종료된 뒤 별도 스크립트가 파일을 교체하며, 실패하면 이전 버전으로 되돌립니다. 설치 프로그램으로 설치했다면
+Windows '설치된 앱'에 보이는 버전도 새 버전으로 맞춥니다.
+업데이트 확인 때 보내는 정보는 앱 버전뿐이며, **설정 → 시작할 때 새 버전 확인**에서 끌 수 있습니다.
 
 ## 개인정보
 
@@ -88,7 +91,7 @@
 .\scripts\dev.ps1            # 가상환경 준비 후 앱 실행 (--debug 로 자세한 로그)
 .\scripts\test.ps1           # Ruff + 전체 테스트 (실제 화면·소리 스모크 테스트 포함)
 .\scripts\test.ps1 -Fast     # 스모크 테스트 제외
-.\scripts\build.ps1          # 실행 파일 + 배포 zip/sha256 빌드
+.\scripts\build.ps1          # 실행 파일 + 배포 zip/sha256 + 설치 프로그램(vcam-setup-<버전>.exe, Inno Setup 6 필요) 빌드
 python scripts\measure_av_drift.py --minutes 10   # 실제 장치로 A/V 싱크 측정
 python scripts\render_screenshots.py              # 문서 스크린샷 다시 만들기(데모 화면 사용)
 ```

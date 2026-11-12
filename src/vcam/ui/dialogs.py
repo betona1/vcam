@@ -145,8 +145,8 @@ class SettingsDialog(QDialog):
         self.guide = QCheckBox("영역 모드에서 바탕화면에 가이드 프레임 표시")
         self.guide.setChecked(settings.show_guide_frame)
         form.addRow("", self.guide)
-        self.auto_update = QCheckBox("새 버전을 자동으로 확인하고 내려받기 (GitHub)")
-        self.auto_update.setToolTip("시작할 때 GitHub에 최신 버전만 물어봅니다. 화면·소리·파일 정보는 보내지 않습니다.")
+        self.auto_update = QCheckBox("시작할 때 새 버전 확인 (GitHub)")
+        self.auto_update.setToolTip("시작할 때 GitHub에 최신 버전만 물어보고, 새 버전이 있으면 업데이트할지 묻습니다. 화면·소리·파일 정보는 보내지 않습니다.")
         self.auto_update.setChecked(settings.auto_update)
         form.addRow("", self.auto_update)
 

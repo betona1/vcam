@@ -27,9 +27,12 @@ class Settings:
     countdown_s: int = 3
     minimize_on_record: bool = True
     show_guide_frame: bool = True
+    auto_stop_idle: bool = False  # 화면이 그대로이고 소리도 없는 상태가 auto_stop_idle_s 이상 이어지면 녹화 자동 종료
+    auto_stop_idle_s: int = 30
     theme: str = "system"  # system | light | dark
     first_run_notice_ack: bool = False
-    auto_update: bool = True  # 시작할 때 GitHub 릴리스 확인 후 백그라운드 다운로드
+    auto_update: bool = True  # 시작할 때 GitHub 최신 릴리스를 확인하고, 새 버전이 있으면 업데이트할지 묻는다
+    skipped_update_version: str = ""  # '이 버전 건너뛰기'로 고른 버전 (자동 확인에서만 묻지 않음)
     source_kind: str = "display"  # display | region
     monitor_index: int = 1
     last_region: tuple[int, int, int, int] | None = None

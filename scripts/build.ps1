@@ -1,4 +1,5 @@
-﻿# PyInstaller one-folder 빌드 → <Dist>\vcam\vcam.exe 와 배포용 <Dist>\vcam-<버전>-win64.zip(+.sha256)
+﻿# PyInstaller one-folder 빌드 → <Dist>\vcam\vcam.exe, 배포용 <Dist>\vcam-<버전>-win64.zip(+.sha256),
+# 설치 프로그램 <Dist>\vcam-setup-<버전>.exe (Inno Setup 6이 있을 때)
 # 사용: .\scripts\build.ps1 [-Dist 경로]
 # FFmpeg는 번들하지 않는다(코덱 라이선스 검토 전). 사용자는 winget 등으로 설치하거나 설정에서 경로를 지정한다.
 # PyAV(faster-whisper 의존성)도 넣지 않는다: 동봉 FFmpeg DLL이 GPL 빌드라서. 대신 pyi_rth_no_pyav.py가 빈 모듈을 등록한다.
@@ -50,6 +51,24 @@ try {
     $Hash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower()
     [System.IO.File]::WriteAllText("$Zip.sha256", "$Hash  $(Split-Path $Zip -Leaf)`n")
     Write-Host "배포 파일: $Zip"
+
+    # 설치 프로그램 vcam-setup-<버전>.exe (Inno Setup 6). CI에서는 반드시 만들고, 로컬은 ISCC가 있을 때만 만든다.
+    $Iscc = @(
+        $env:VCAM_ISCC,
+        (Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if ($Iscc) {
+        & $Iscc /Q "/DAppVersion=$Version" "/DSourceDir=$(Join-Path $Dist 'vcam')" "/DOutputDir=$Dist" (Join-Path $Root "packaging\vcam.iss")
+        if ($LASTEXITCODE -ne 0) { throw "설치 프로그램 빌드 실패 (ISCC 종료 코드 $LASTEXITCODE)" }
+        Write-Host "설치 프로그램: $(Join-Path $Dist "vcam-setup-$Version.exe")"
+    } elseif ($env:CI) {
+        throw "Inno Setup(ISCC.exe)을 찾지 못해 설치 프로그램을 만들 수 없습니다"
+    } else {
+        Write-Warning "Inno Setup 6이 없어 설치 프로그램(vcam-setup-$Version.exe)은 건너뜁니다. 'winget install JRSoftware.InnoSetup' 후 다시 빌드하세요."
+    }
 } finally {
     Pop-Location
 }

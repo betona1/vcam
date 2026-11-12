@@ -63,6 +63,13 @@ vcam은 FFmpeg/ffprobe를 **별도 프로세스로 실행**하며 배포본에 �
 사용자가 설치한 FFmpeg 빌드(예: `winget install Gyan.FFmpeg`, GPL 빌드)의 라이선스는 해당 빌드를 따릅니다.
 FFmpeg를 번들하게 되면 빌드 구성과 코덱 라이선스를 검증한 뒤 이 문서와 배포 폴더에 고지를 추가합니다.
 
+## 설치 프로그램 — Inno Setup
+
+- 설치 프로그램 `vcam-setup-<버전>.exe`는 [Inno Setup 6](https://jrsoftware.org/isinfo.php)(Jordan Russell, Martijn Laan)으로 만듭니다.
+  Inno Setup 라이선스는 상업용을 포함해 무료 사용과, 만든 설치 프로그램의 배포를 허용합니다: https://jrsoftware.org/files/is/license.txt
+- 설치 스크립트 `packaging/vcam.iss`는 vCAM 저장소의 코드이며 다른 스크립트를 복사하지 않았습니다. 한국어 화면은 Inno Setup에 포함된 공식 번역 파일(`Korean.isl`)을 씁니다.
+- 설치 프로그램은 빌드 도구일 뿐 앱 실행에는 필요하지 않으며, zip 배포본에는 포함되지 않습니다.
+
 ## 아이콘과 이미지
 
 - `src/vcam/ui/icons.py`의 라인 아이콘은 이 프로젝트를 위해 직접 제작했습니다.

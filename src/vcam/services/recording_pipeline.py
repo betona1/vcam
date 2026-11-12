@@ -37,6 +37,10 @@ BLACK_CHECK_INTERVAL_S = 2.0
 BLACK_CONSECUTIVE = 3  # 2초 간격으로 3번 연속 검으면 알린다 (약 6초)
 BLACK_LEVEL = 16  # 0~255. 이보다 밝은 픽셀이 하나도 없으면 검은 프레임으로 본다
 BLACK_SCREEN_NOTE = "화면이 검게 기록된 구간이 있습니다. 보호된 콘텐츠(DRM)이거나 캡처가 막힌 창일 수 있습니다."
+STILL_CHECK_INTERVAL_S = 1.0
+STILL_STEP = 8  # 화면 변화 비교용 샘플 간격(px)
+STILL_PIXEL_DELTA = 16  # 0~255. 채널 차이가 이보다 크면 바뀐 샘플
+STILL_CHANGED_FRACTION = 0.001  # 바뀐 샘플이 이 비율보다 많으면 화면이 바뀐 것 (깜빡이는 커서·시계 숫자는 무시)
 HW_RETRY_WINDOW_NS = 2_000_000_000
 
 BackendOpener = Callable[[Rect], CaptureBackend]
@@ -46,6 +50,23 @@ def looks_black(frame: np.ndarray, level: int = BLACK_LEVEL) -> bool:
     """프레임이 사실상 검은지 싸게 판단한다. 32px 간격으로 샘플링하고 알파 채널은 무시한다."""
     sample = frame[::32, ::32, :3]
     return sample.size == 0 or int(sample.max()) < level
+
+
+def still_sample(frame: np.ndarray, step: int = STILL_STEP) -> np.ndarray:
+    """화면 변화 비교용 성긴 샘플(알파 제외). 원본 버퍼와 공유하지 않도록 복사한다."""
+    return np.array(frame[::step, ::step, :3], dtype=np.int16, copy=True)
+
+
+def screen_changed(reference: np.ndarray, sample: np.ndarray) -> bool:
+    """두 샘플 사이에 의미 있는 화면 변화가 있는지. 크기가 다르면 바뀐 것으로 본다."""
+    if reference.shape != sample.shape:
+        return True
+    if sample.size == 0:
+        return False
+    changed = np.count_nonzero(np.abs(sample - reference).max(axis=2) > STILL_PIXEL_DELTA)
+    return changed > STILL_CHANGED_FRACTION * sample.shape[0] * sample.shape[1]
+
+
 WriterFactory = Callable[[str], FfmpegVideoWriter]
 
 
@@ -100,6 +121,7 @@ class RecordingPipeline:
         self._notes: list[str] = []
         self._black_streak = 0
         self._black_screen = False
+        self._still_since_ns = 0  # 세션 시계(활성 시간) 기준으로 화면이 마지막으로 바뀐 시각
         self._fps_window: deque[int] = deque(maxlen=64)
         self._writer: FfmpegVideoWriter | None = None
         self._exit_code = -1
@@ -162,6 +184,7 @@ class RecordingPipeline:
                 measured_fps=fps,
                 encoder=self._encoder,
                 black_screen=self._black_screen,
+                still_ns=max(0, self.clock.active_ns() - self._still_since_ns) if self._ready.is_set() else 0,
             )
 
     def _note_black(self, black: bool) -> None:
@@ -208,6 +231,8 @@ class RecordingPipeline:
             last = first
             next_disk_check = time.monotonic() + DISK_CHECK_INTERVAL_S
             next_black_check = time.monotonic() + BLACK_CHECK_INTERVAL_S
+            next_still_check = time.monotonic() + STILL_CHECK_INTERVAL_S
+            reference = still_sample(first) if first is not None else None
             while not self._stop.is_set():
                 if self.clock.is_paused:
                     self._stop.wait(0.02)
@@ -236,6 +261,13 @@ class RecordingPipeline:
                 if time.monotonic() >= next_black_check:
                     next_black_check = time.monotonic() + BLACK_CHECK_INTERVAL_S
                     self._note_black(looks_black(frame))
+                if time.monotonic() >= next_still_check:
+                    next_still_check = time.monotonic() + STILL_CHECK_INTERVAL_S
+                    sample = still_sample(frame)
+                    if reference is None or screen_changed(reference, sample):
+                        reference = sample
+                        with self._lock:
+                            self._still_since_ns = self.clock.active_ns()
                 if time.monotonic() >= next_disk_check:
                     next_disk_check = time.monotonic() + DISK_CHECK_INTERVAL_S
                     if free_bytes(self.config.partial_path.parent) < self.config.min_free_bytes:
