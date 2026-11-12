@@ -62,8 +62,9 @@ def test_not_installable_when_running_from_source(qtbot, fake_service, monkeypat
     with qtbot.waitSignal(u.found, timeout=5000) as found:
         u.check(manual=True)
     assert found.args[1] is False
+    qtbot.waitUntil(lambda: not u.busy, timeout=2000)  # found 직후에는 확인 스레드가 아직 정리 중이다
     with qtbot.waitSignal(u.failed, timeout=5000):
-        u.download(RELEASE)
+        assert u.download(RELEASE)
 
 
 def test_up_to_date_only_reported_on_manual_check(qtbot, monkeypatch):
