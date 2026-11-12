@@ -139,7 +139,7 @@ class SettingsDialog(QDialog):
         self.countdown.setValue(settings.countdown_s)
         form.addRow("카운트다운", self.countdown)
 
-        self.minimize = QCheckBox("녹화를 시작하면 vcam 창을 최소화")
+        self.minimize = QCheckBox("녹화 중에는 vCAM 창 내리기")
         self.minimize.setChecked(settings.minimize_on_record)
         form.addRow("", self.minimize)
         self.guide = QCheckBox("영역 모드에서 바탕화면에 가이드 프레임 표시")

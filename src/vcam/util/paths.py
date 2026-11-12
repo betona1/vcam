@@ -127,6 +127,19 @@ def free_bytes(path: Path) -> int:
     return shutil.disk_usage(probe).free
 
 
+def is_network_path(path: Path) -> bool:
+    """네트워크 드라이브(매핑된 드라이브 문자 또는 UNC 경로) 위의 경로인지."""
+    text = str(path)
+    if text.startswith(("\\\\", "//")):
+        return True
+    if os.name != "nt" or len(text) < 2 or text[1] != ":":
+        return False
+    import ctypes
+
+    DRIVE_REMOTE = 4  # noqa: N806 - Win32 상수
+    return ctypes.windll.kernel32.GetDriveTypeW(f"{text[0]}:\\") == DRIVE_REMOTE
+
+
 def is_writable_dir(path: Path) -> bool:
     try:
         path.mkdir(parents=True, exist_ok=True)

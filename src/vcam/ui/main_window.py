@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self._themed: list[tuple[object, str, str]] = []  # (위젯/액션, 아이콘 이름, 색 토큰)
         self._last_result: RecordingResult | None = None
         self._silence_alerted = False  # 이번 무음 구간에 대해 경고음을 이미 냈는지
+        self._missing_alerted = False  # 소리 장치가 끊긴 데 대해 경고음을 이미 냈는지
         self.editor: EditorWindow | None = None
         self.subtitle_dialog: SubtitleDialog | None = None
         self.download_dialog: DownloadDialog | None = None
@@ -426,6 +427,16 @@ class MainWindow(QMainWindow):
             lambda on: self._save_settings(replace(self.settings, auto_stop_idle=on))
         )
         info.addWidget(self.auto_stop_check)
+        self.minimize_check = QCheckBox("녹화 중에는 vCAM 창 내리기")
+        self.minimize_check.setToolTip(
+            "녹화를 시작하면 vCAM 창을 작업 표시줄로 내리고, 녹화가 끝나면 다시 엽니다.\n"
+            "녹화 중에는 화면 위의 작은 녹화 아이콘에 마우스를 올리면 일시정지·종료 버튼이 나옵니다."
+        )
+        self.minimize_check.setChecked(self.settings.minimize_on_record)
+        self.minimize_check.toggled.connect(
+            lambda on: self._save_settings(replace(self.settings, minimize_on_record=on))
+        )
+        info.addWidget(self.minimize_check)
         self.ffmpeg_warning = QPushButton("FFmpeg를 찾을 수 없습니다 — 진단 열기")
         self.ffmpeg_warning.clicked.connect(self.open_diagnostics)
         self.ffmpeg_warning.hide()
@@ -843,6 +854,11 @@ class MainWindow(QMainWindow):
         self.controller.update_settings(settings)
         self.output_label.setText(settings.output_dir)
         self.output_label.setToolTip(settings.output_dir)
+        for check, value in ((self.auto_stop_check, settings.auto_stop_idle), (self.minimize_check, settings.minimize_on_record)):
+            if check.isChecked() != value:
+                check.blockSignals(True)
+                check.setChecked(value)
+                check.blockSignals(False)
         if self.editor is not None:
             self.editor.set_output_dir(settings.output_dir)
             self.editor.set_same_folder(settings.editor_same_folder)
@@ -1081,13 +1097,26 @@ class MainWindow(QMainWindow):
         elapsed = format_duration(m.elapsed_ns / 1e9)
         self.timer_label.setText(elapsed)
         self.bar.set_elapsed(elapsed)
-        warnings = [("검은 화면", BLACK_SCREEN_NOTICE)] if m.black_screen else []
+        warnings = []
+        if m.audio_missing:
+            names = "·".join(m.audio_missing)
+            warnings.append((f"{names} 녹음 안 됨", f"{names} 장치 연결이 끊겨 지금은 소리가 녹음되지 않습니다.\n"
+                             "장치가 다시 연결되면 자동으로 이어서 녹음합니다. 끊긴 구간은 무음으로 남습니다.\n"
+                             "모니터·헤드셋으로 소리를 듣는 중이면 그 장치가 꺼지거나 절전에 들어갔는지 확인해 주세요."))  # fmt: skip
+        if m.black_screen:
+            warnings.append(("검은 화면", BLACK_SCREEN_NOTICE))
         if m.audio_silent:
             warnings.append(("소리 없음", SILENT_AUDIO_NOTICE))
         if m.idle_stop_in_s is not None:
             warnings.append((f"자동 종료 {m.idle_stop_in_s:.0f}초 전",
                              "화면과 소리에 변화가 없어 곧 녹화를 자동으로 마칩니다. 계속하려면 화면을 움직이거나 소리를 내세요."))  # fmt: skip
         self.bar.set_warning(" · ".join(t for t, _ in warnings) or None, "\n\n".join(tip for _, tip in warnings))
+        if m.audio_missing and not self._missing_alerted:
+            self._missing_alerted = True
+            self.bar.reveal()
+            _alert_beep()
+        elif not m.audio_missing:
+            self._missing_alerted = False
         if m.audio_silent and not self._silence_alerted:
             # 창이 트레이/최소화 상태일 수 있으므로 소리로도 알린다. 상태 표시줄 안내는 컨트롤러 notice가 띄운다.
             self._silence_alerted = True

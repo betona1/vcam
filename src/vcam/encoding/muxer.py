@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -63,6 +65,22 @@ def remux_to_mp4(
         raise MuxError(f"MP4로 변환하지 못했습니다: {result.stderr.strip()[:300]}")
 
 
+def _same_volume(a: Path, b: Path) -> bool:
+    try:
+        return os.path.splitdrive(a.resolve())[0].lower() == os.path.splitdrive(b.resolve())[0].lower()
+    except OSError:
+        return False
+
+
+def _local_has_room(partial: Path, audio: Sequence[AudioTrack]) -> bool:
+    """세션 폴더 디스크에 임시 MP4를 만들 공간이 있는지(영상 + PCM 크기의 1.2배 + 여유 200MB)."""
+    try:
+        need = partial.stat().st_size + sum(t.path.stat().st_size // 5 for t in audio if t.path.exists())
+        return shutil.disk_usage(partial.parent).free > need * 1.2 + 200_000_000
+    except OSError:
+        return False
+
+
 def finalize_to_output(
     ffmpeg: FfmpegPaths,
     partial: Path,
@@ -71,17 +89,32 @@ def finalize_to_output(
     tolerant: bool = False,
     audio: Sequence[AudioTrack] = (),
 ) -> MediaInfo:
-    """partial MKV(+PCM) → 임시 MP4 → ffprobe 검증 → 충돌 없는 최종 이름으로 이동."""
+    """partial MKV(+PCM) → 임시 MP4 → ffprobe 검증 → 충돌 없는 최종 이름으로 이동.
+
+    임시 MP4는 세션 폴더(로컬 디스크)에서 만든다. +faststart는 파일을 다 쓴 뒤 다시 읽어 한 번 더 쓰므로,
+    저장 폴더가 네트워크 드라이브면 같은 데이터가 세 번 오간다. 로컬에서 만들고 검증한 뒤 한 번만 복사한다.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    tmp = output_dir / f".{stem}.vcam-tmp.mp4"
     expect_audio = any(t.path.exists() and t.path.stat().st_size > 0 for t in audio)
+    out_tmp = output_dir / f".{stem}.vcam-tmp.mp4"
+    local_tmp = partial.parent / f"{stem}.vcam-tmp.mp4" if _local_has_room(partial, audio) else out_tmp
     try:
-        remux_to_mp4(ffmpeg, partial, tmp, tolerant=tolerant, audio=audio)
-        info = validate_recording(ffmpeg, tmp, expect_audio=expect_audio)
+        remux_to_mp4(ffmpeg, partial, local_tmp, tolerant=tolerant, audio=audio)
+        info = validate_recording(ffmpeg, local_tmp, expect_audio=expect_audio)
         final = unique_path(output_dir, stem, ".mp4")
-        os.replace(tmp, final)
+        if local_tmp == out_tmp or _same_volume(local_tmp, output_dir):
+            os.replace(local_tmp, final)
+        else:
+            started = time.monotonic()
+            shutil.copyfile(local_tmp, out_tmp)
+            if out_tmp.stat().st_size != local_tmp.stat().st_size:
+                raise OSError("저장 폴더로 복사한 파일 크기가 다릅니다")
+            os.replace(out_tmp, final)
+            local_tmp.unlink(missing_ok=True)
+            log.info("저장 폴더로 복사: %.1fMB, %.1f초", final.stat().st_size / 1e6, time.monotonic() - started)
     except (MuxError, ValidationError, OSError):
-        tmp.unlink(missing_ok=True)
+        local_tmp.unlink(missing_ok=True)
+        out_tmp.unlink(missing_ok=True)
         raise
     info = replace(info, path=final)
     log.info("녹화 저장 완료: %s (%.1f초, 오디오 %s)", redact_path(final), info.duration_s, info.audio_codec or "없음")

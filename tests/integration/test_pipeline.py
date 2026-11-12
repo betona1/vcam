@@ -109,3 +109,23 @@ def test_validator_rejects_garbage(tmp_path, ffmpeg):
     bad.write_bytes(b"not a video")
     with pytest.raises(Exception):  # noqa: B017
         probe_media(ffmpeg, bad)
+
+
+def test_mp4_is_built_locally_then_copied_once_to_other_drive(tmp_path, ffmpeg, monkeypatch):
+    """2026-11-12 회귀: 저장 폴더가 네트워크 드라이브면 +faststart가 같은 파일을 세 번 주고받아 17분 영상 저장에 78초.
+    임시 MP4는 세션 폴더(로컬)에서 만들고, 저장 폴더에는 검증된 파일을 한 번만 복사한다."""
+    from vcam.encoding import muxer
+
+    pipeline, paths = make_pipeline(tmp_path, ffmpeg, Rect(0, 0, 320, 240))
+    pipeline.start()
+    assert pipeline.wait_ready(5)
+    time.sleep(1.0)
+    pipeline.stop()
+    built_in: list = []
+    real_remux = muxer.remux_to_mp4
+    monkeypatch.setattr(muxer, "remux_to_mp4", lambda f, src, dst, **kw: (built_in.append(dst.parent), real_remux(f, src, dst, **kw))[1])
+    monkeypatch.setattr(muxer, "_same_volume", lambda _a, _b: False)  # 다른 드라이브(네트워크)인 것처럼
+    info = muxer.finalize_to_output(ffmpeg, paths.video_partial, tmp_path / "out", "copied")
+    assert built_in == [paths.video_partial.parent], "MP4는 세션 폴더에서 만든다"
+    assert info.path == tmp_path / "out" / "copied.mp4" and info.path.stat().st_size > 0
+    assert not list((tmp_path / "out").glob(".*vcam-tmp*")) and not list(paths.directory.glob("*.vcam-tmp.mp4"))

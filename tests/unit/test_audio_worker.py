@@ -5,7 +5,8 @@
 
 import time
 
-from vcam.audio.base import FakeAudioSource
+from vcam.audio import worker as worker_mod
+from vcam.audio.base import SAMPLE_RATE, AudioError, FakeAudioSource
 from vcam.audio.worker import MAX_REOPEN_ATTEMPTS, AudioWorker, WorkerStatus
 
 
@@ -35,7 +36,7 @@ def test_default_device_change_reopens_without_counting_as_failure():
         worker.stop()
 
 
-def test_real_failure_still_gives_up_after_limit():
+def test_real_failure_is_reported_after_limit():
     def factory():
         return FakeAudioSource(channels=2, fail_after_blocks=1)
 
@@ -47,5 +48,40 @@ def test_real_failure_still_gives_up_after_limit():
         while worker.status is not WorkerStatus.FAILED and time.monotonic() < deadline:
             time.sleep(0.05)
         assert worker.status is WorkerStatus.FAILED
+    finally:
+        worker.stop()
+
+
+class _MissingThenBack(FakeAudioSource):
+    """처음 `missing_opens`번은 장치가 없다(모니터 절전으로 HDMI 소리 장치가 사라진 상황)."""
+
+    opens = 0
+
+    def __init__(self, missing_opens: int) -> None:
+        super().__init__(channels=2)
+        self._missing = missing_opens
+
+    def open(self) -> None:
+        type(self).opens += 1
+        if type(self).opens <= self._missing:
+            raise AudioError("출력 장치가 없습니다")
+        super().open()
+
+
+def test_lost_device_is_watched_and_reopened_when_it_returns(monkeypatch):
+    """2026-11-12 회귀: 재시도 5번 뒤 포기해 장치가 돌아와도 다음 녹화가 소리 없이 저장됐다."""
+    monkeypatch.setattr(worker_mod, "REOPEN_DELAY_S", 0.01)
+    monkeypatch.setattr(worker_mod, "WATCH_INTERVAL_S", 0.05)
+    _MissingThenBack.opens = 0
+    worker = AudioWorker("system", lambda: _MissingThenBack(MAX_REOPEN_ATTEMPTS + 3))
+    worker.start()
+    try:
+        assert not worker.wait_opened(2.0)
+        assert worker.status is WorkerStatus.FAILED
+        assert (worker.samplerate, worker.channels) == (SAMPLE_RATE, 2), "장치가 없어도 형식은 알고 있어야 한다"
+        deadline = time.monotonic() + 5.0
+        while worker.status is not WorkerStatus.OK and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert worker.status is WorkerStatus.OK, "장치가 돌아오면 다시 열어야 한다"
     finally:
         worker.stop()

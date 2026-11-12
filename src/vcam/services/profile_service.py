@@ -14,7 +14,7 @@ from vcam.util.paths import DEFAULT_FILENAME_TEMPLATE, app_data_dir, default_out
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class Settings:
     ffmpeg_path: str = ""
     capture_backend: str = "auto"  # auto | dxcam | mss
     countdown_s: int = 3
-    minimize_on_record: bool = True
+    minimize_on_record: bool = False  # 녹화 중 메인 창 내리기 (0.6.1부터 기본 해제, 메인 창 체크박스)
     show_guide_frame: bool = True
     auto_stop_idle: bool = False  # 화면이 그대로이고 소리도 없는 상태가 auto_stop_idle_s 이상 이어지면 녹화 자동 종료
     auto_stop_idle_s: int = 30
@@ -85,6 +85,10 @@ def migrate(data: dict[str, Any]) -> dict[str, Any]:
         profile.setdefault("microphone_enabled", False)
         data["profile"] = profile
         version = 3
+    if version < 4:
+        # 0.6.1: '녹화 중 창 내리기'의 기본값을 해제로 바꿨다. 예전 기본값(켜짐)으로 저장된 값도 해제한다.
+        data["minimize_on_record"] = False
+        version = 4
     data["schema_version"] = version
     return data
 

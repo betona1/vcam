@@ -40,6 +40,7 @@ from vcam.services.recovery_service import write_session_meta
 from vcam.util.clock import SessionClock
 from vcam.util.paths import (
     free_bytes,
+    is_network_path,
     is_writable_dir,
     new_session_id,
     render_filename,
@@ -65,6 +66,23 @@ IDLE_STOP_WARN_S = 10.0  # 종료 이만큼 전부터 남은 시간을 보여 �
 AUTO_STOP_NOTE = "화면과 소리에 변화가 없어 자동으로 녹화를 마쳤습니다. 끝부분의 멈춘 구간은 편집기에서 잘라낼 수 있습니다."
 
 MIN_START_FREE_BYTES = 1024**3
+MISSING_AUDIO_NOTE_S = 5.0  # 장치가 끊겨 무음으로 채운 구간이 이보다 길면 결과에 알린다
+
+
+def missing_audio_notes(stats, samplerates: dict[str, int]) -> list[str]:
+    """장치가 끊겨 무음으로 채운 구간을 결과 안내 문구로 만든다."""
+    notes = []
+    for st in stats:
+        sr = samplerates.get(st.label) or 0
+        if not sr or not st.samples_written:
+            continue
+        label = TRACK_LABELS.get(st.label, st.label)
+        padded_s = st.padded_samples / sr
+        if st.padded_samples >= st.samples_written * 0.95:
+            notes.append(f"{label}가 녹음되지 않았습니다. 녹화 내내 소리 장치가 연결되어 있지 않았습니다.")
+        elif padded_s >= MISSING_AUDIO_NOTE_S:
+            notes.append(f"{label} 장치가 끊긴 약 {padded_s:.0f}초 구간은 소리 없이 저장했습니다.")
+    return notes
 
 
 class _Bridge(QObject):
@@ -73,6 +91,7 @@ class _Bridge(QObject):
     prepared = Signal(object)
     finished = Signal(object)
     fatal = Signal(object)
+    notice = Signal(str)
 
 
 class RecordingController(QObject):
@@ -110,6 +129,7 @@ class RecordingController(QObject):
         self._bridge.prepared.connect(self._on_prepared)
         self._bridge.finished.connect(self._on_finished)
         self._bridge.fatal.connect(self._on_fatal)
+        self._bridge.notice.connect(self.notice)
 
         self._countdown_timer = QTimer(self, interval=1000)
         self._countdown_timer.timeout.connect(self._on_countdown)
@@ -176,9 +196,10 @@ class RecordingController(QObject):
                 self.notice.emit(f"{label} 장치 연결이 끊겨 다시 연결하는 중입니다. 끊긴 구간은 무음으로 채웁니다.")
             elif status is WorkerStatus.FAILED:
                 worker = self.audio.worker(kind)
-                self.notice.emit(f"{label} 장치를 사용할 수 없습니다: {worker.error if worker else ''}")
-            elif status is WorkerStatus.OK and previous is WorkerStatus.RECONNECTING:
-                self.notice.emit(f"{label} 장치에 다시 연결했습니다.")
+                error = worker.error if worker else ""
+                self.notice.emit(f"{label} 장치를 사용할 수 없습니다: {error} — 장치가 돌아오면 자동으로 다시 연결합니다.")
+            elif status is WorkerStatus.OK and previous in (WorkerStatus.RECONNECTING, WorkerStatus.FAILED):
+                self.notice.emit(f"{label} 장치에 다시 연결했습니다." + (" 이제부터 다시 녹음됩니다." if self.is_busy else ""))
 
     # ── 명령 ────────────────────────────────────────────────────────────────
     def _fire(self, command: Command) -> bool:
@@ -238,6 +259,7 @@ class RecordingController(QObject):
             self.error_raised.emit(error)
             return
         self._prepared = None
+        self.apply_audio_settings()  # 사용할 수 없던 소리 장치는 지금 한 번 더 바로 열어 본다
         self._fire(Command.START)
         self._countdown_left = max(0, int(self.settings.countdown_s))
         self._prepare_gen += 1
@@ -362,7 +384,7 @@ class RecordingController(QObject):
         clock = SessionClock()
         self._tracks = self.audio.begin_recording(clock, paths.directory)
         for problem in prepared.get("audio_failed", []):
-            self.notice.emit(f"소리 없이 녹화합니다 — {problem}")
+            self.notice.emit(f"지금은 소리가 녹음되지 않습니다 — {problem}. 장치가 다시 연결되면 자동으로 이어서 녹음합니다.")
         write_session_meta(paths, {
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "output_stem": self._stem,
@@ -447,8 +469,11 @@ class RecordingController(QObject):
             self._bridge.finished.emit(result)
             return
         # 오디오를 영상 길이(프레임 수 / fps)에 정확히 맞춘다.
-        self.audio.end_recording(outcome.frames_written / pipeline.config.fps)
+        stats = self.audio.end_recording(outcome.frames_written / pipeline.config.fps)
+        audio_notes = missing_audio_notes(stats, {t.label: t.samplerate for t in tracks})
         try:
+            if is_network_path(output_dir):
+                self._bridge.notice.emit("저장 폴더가 네트워크 드라이브라 옮기는 데 시간이 걸릴 수 있습니다…")
             result["media"], result["notes"] = finalize_with_fallback(ffmpeg, paths.video_partial, output_dir, stem, tracks)
         except (MuxError, ValidationError, OSError) as exc:
             log.warning("정상 저장 실패, 복구 모드로 재시도: %s", exc)
@@ -466,6 +491,7 @@ class RecordingController(QObject):
                 )
                 self._bridge.finished.emit(result)
                 return
+        result["notes"] = [*result["notes"], *audio_notes]
         shutil.rmtree(paths.directory, ignore_errors=True)
         self._bridge.finished.emit(result)
 
@@ -516,7 +542,7 @@ class RecordingController(QObject):
             elapsed_ns=metrics.elapsed_ns, frames_written=metrics.frames_written,
             frames_dropped=metrics.frames_dropped, measured_fps=metrics.measured_fps,
             file_bytes=size, encoder=metrics.encoder, black_screen=metrics.black_screen, audio_silent=silent,
-            still_ns=metrics.still_ns, idle_stop_in_s=stop_in if stop_in is not None and stop_in <= IDLE_STOP_WARN_S else None,
+            still_ns=metrics.still_ns, audio_missing=self._audio_missing(), idle_stop_in_s=stop_in if stop_in is not None and stop_in <= IDLE_STOP_WARN_S else None,
         ))  # fmt: skip
         if stop_in is not None and stop_in <= 0:
             self._auto_stop()
@@ -531,6 +557,12 @@ class RecordingController(QObject):
         elif not silent and self._silence_notified:
             self._silence_notified = False
             self.notice.emit("시스템 소리가 다시 잡힙니다.")
+
+    def _audio_missing(self) -> tuple[str, ...]:
+        """녹화 중 장치가 끊겨 지금 녹음되지 않는 소리 트랙 이름(예: '시스템 소리')."""
+        if self.state is not RecordingState.RECORDING:
+            return ()
+        return tuple(TRACK_LABELS[k] for k in self.audio.missing_tracks())
 
     def _update_silence(self) -> bool:
         """녹화 중이고 시스템 소리 장치가 열려 있는데 소리가 계속 디지털 무음이면 True. 일시정지·재연결 중에는 세지 않는다."""

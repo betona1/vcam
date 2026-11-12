@@ -102,15 +102,22 @@ class AudioService:
         self.abort_recording()  # 이전 녹화의 기록기가 남아 있으면 닫는다
         tracks = []
         for kind, (_device, worker) in self._workers.items():
-            if worker.status is not WorkerStatus.OK or not worker.samplerate:
-                log.warning("%s 장치가 준비되지 않아 이 트랙은 녹음하지 않습니다", kind)
+            if not worker.samplerate:
+                log.warning("%s 장치 형식을 몰라 이 트랙은 녹음하지 않습니다", kind)
                 continue
+            if worker.status is not WorkerStatus.OK:
+                # 트랙은 만들어 둔다: 장치가 돌아오면 그때부터 녹음하고, 그 전 구간은 무음으로 채운다
+                log.warning("%s 장치가 연결되지 않은 채 녹화를 시작합니다 (돌아오면 이어서 녹음)", kind)
             track = AudioTrack(kind, session_dir / f"{kind}.pcm", worker.samplerate, worker.channels)
             writer = AlignedPcmWriter(track, clock)
             worker.attach(writer)
             self._writers.append((worker, writer))
             tracks.append(track)
         return tracks
+
+    def missing_tracks(self) -> list[AudioKind]:
+        """녹화 중인 트랙 가운데 지금 장치가 연결되어 있지 않아 무음으로 채워지고 있는 것."""
+        return [w.kind for w, _ in self._writers if w.status is not WorkerStatus.OK]
 
     def end_recording(self, duration_s: float) -> list[TrackStats]:
         stats = []

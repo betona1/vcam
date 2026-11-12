@@ -4,7 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from vcam.audio.base import FakeAudioSource
+from vcam.audio import worker as worker_mod
+from vcam.audio.base import AudioError, FakeAudioSource
 from vcam.capture.region import list_monitors
 from vcam.domain.models import CaptureSource, RecordingProfile, Rect
 from vcam.domain.states import RecordingState
@@ -248,5 +249,44 @@ def test_auto_stop_off_by_default(qtbot, tmp_path, ffmpeg, monkeypatch):
         qtbot.waitUntil(lambda: c.state is RecordingState.RECORDING, timeout=10_000)
         qtbot.wait(3000)
         assert c.state is RecordingState.RECORDING
+    finally:
+        c.shutdown()
+
+
+class _UnpluggedSource(FakeAudioSource):
+    """장치가 사라진 상태(모니터 절전으로 HDMI 소리 장치가 없어짐). `back`을 켜면 다시 열린다."""
+
+    back = False
+
+    def open(self) -> None:
+        if not type(self).back:
+            raise AudioError("출력 장치가 없습니다")
+        super().open()
+
+
+def test_recording_starts_without_sound_device_and_picks_it_up_when_it_returns(qtbot, tmp_path, ffmpeg, monkeypatch):
+    """2026-11-12 회귀: 녹화 전에 소리 장치가 끊겨 '포기' 상태가 되자, 장치가 돌아와도 17분 녹화가 소리 없이 저장됐다.
+    장치 없이 시작해도 트랙을 만들어 두고, 녹음 안 됨을 알리며, 장치가 돌아오면 이어서 녹음한다."""
+    monkeypatch.setattr(worker_mod, "REOPEN_DELAY_S", 0.01)
+    monkeypatch.setattr(worker_mod, "WATCH_INTERVAL_S", 0.2)
+    _UnpluggedSource.back = False
+    c = make_controller(tmp_path, audio=AudioService(lambda _k, _d: _UnpluggedSource(channels=2)), mic=False)
+    notices, metrics = [], []
+    c.notice.connect(notices.append)
+    c.metrics_changed.connect(metrics.append)
+    try:
+        c.start()
+        qtbot.waitUntil(lambda: c.state is RecordingState.RECORDING, timeout=10_000)
+        qtbot.waitUntil(lambda: any(m.audio_missing == ("시스템 소리",) for m in metrics), timeout=5_000)
+        assert any("지금은 소리가 녹음되지 않습니다" in n for n in notices)
+        qtbot.wait(5500)  # 결과 안내는 5초 이상 끊긴 구간부터
+        _UnpluggedSource.back = True
+        qtbot.waitUntil(lambda: metrics and metrics[-1].audio_missing == (), timeout=5_000)
+        qtbot.wait(1500)
+        with qtbot.waitSignal(c.recording_saved, timeout=30_000) as saved:
+            c.stop()
+        result = saved.args[0]
+        assert result.media.audio_codec == "aac", "장치가 돌아온 뒤의 소리는 저장되어야 한다"
+        assert any("소리 없이 저장했습니다" in n for n in result.notes), result.notes
     finally:
         c.shutdown()

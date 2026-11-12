@@ -64,3 +64,12 @@ def test_editor_same_folder_roundtrip_and_default(tmp_path):
     (tmp_path / "old.json").write_text(json.dumps({"schema_version": 3, "output_dir": "D:/v"}), encoding="utf-8")
     old = ProfileService(tmp_path / "old.json").load()
     assert old.editor_same_folder is True and old.output_dir == "D:/v"
+
+
+def test_v3_minimize_on_record_is_turned_off_once(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 3, "minimize_on_record": True}), encoding="utf-8")
+    svc = ProfileService(path)
+    assert svc.load().minimize_on_record is False, "0.6.1부터 녹화 중 창 내리기는 기본 해제"
+    svc.update(svc.load(), minimize_on_record=True)
+    assert ProfileService(path).load().minimize_on_record is True, "사용자가 다시 켜면 유지"

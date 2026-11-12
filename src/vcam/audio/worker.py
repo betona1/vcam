@@ -1,6 +1,8 @@
 """오디오 소스 하나를 읽는 스레드. 녹화 전에는 음량 미터만, 녹화 중에는 PCM 기록까지 한다.
 
-장치가 분리되면 제한된 횟수만 다시 연다(무제한 재시도 금지). 기본 장치를 따르는 소스가
+장치가 분리되면 1초 간격으로 몇 번 다시 열어 보고, 그래도 안 되면 FAILED로 알린 뒤 장치가 돌아오는지
+WATCH_INTERVAL_S마다 한 번씩만 확인한다(바쁜 무한 재시도가 아니라 느린 감시). 모니터 HDMI 소리처럼
+모니터 절전·입력 전환에 잠깐 사라졌다 돌아오는 장치를, 녹화 도중이라도 다시 이어서 녹음하기 위해서다. 기본 장치를 따르는 소스가
 Windows 기본 장치 변경(AudioDeviceChanged)을 알리면 장애로 세지 않고 즉시 새 장치를 연다.
 다시 여는 동안 빠진 구간은 AlignedPcmWriter가 무음으로 메운다.
 """
@@ -21,6 +23,7 @@ log = logging.getLogger(__name__)
 
 MAX_REOPEN_ATTEMPTS = 5
 REOPEN_DELAY_S = 1.0
+WATCH_INTERVAL_S = 5.0
 STABLE_RESET_S = 30.0
 
 SourceFactory = Callable[[], AudioSource]
@@ -96,19 +99,26 @@ class AudioWorker:
         attempts = 0
         while not self._stop.is_set():
             source = self._factory()
+            # 형식은 장치를 열기 전에도 정해져 있다: 장치가 없는 채 녹화를 시작해도 트랙을 만들어 둘 수 있다
+            self.samplerate, self.channels = source.samplerate, source.channels
             try:
                 source.open()
             except AudioError as exc:
                 attempts += 1
                 self._error = str(exc)
                 if attempts >= MAX_REOPEN_ATTEMPTS:
-                    log.error("%s 오디오 장치를 열 수 없어 포기합니다: %s", self.kind, exc)
+                    if self._status is not WorkerStatus.FAILED:
+                        log.error("%s 오디오 장치를 열 수 없습니다. %.0f초마다 다시 확인합니다: %s", self.kind, WATCH_INTERVAL_S, exc)
                     self._status = WorkerStatus.FAILED
                     self._opened.set()
-                    return
+                    self._stop.wait(WATCH_INTERVAL_S)
+                    continue
                 self._status = WorkerStatus.RECONNECTING
                 self._stop.wait(REOPEN_DELAY_S)
                 continue
+            if self._status is WorkerStatus.FAILED:
+                log.info("%s 오디오 장치가 돌아와 다시 열었습니다", self.kind)
+                attempts = 0
             self.device_name = source.device_name
             self.samplerate, self.channels = source.samplerate, source.channels
             self._status = WorkerStatus.OK
@@ -131,10 +141,12 @@ class AudioWorker:
                 log.warning("%s 오디오 장치 오류(%d/%d): %s", self.kind, attempts, MAX_REOPEN_ATTEMPTS, exc)
                 self.meter.reset()
                 if attempts >= MAX_REOPEN_ATTEMPTS:
+                    log.error("%s 오디오 장치를 사용할 수 없습니다. %.0f초마다 다시 확인합니다", self.kind, WATCH_INTERVAL_S)
                     self._status = WorkerStatus.FAILED
-                    return
-                self._status = WorkerStatus.RECONNECTING
-                self._stop.wait(REOPEN_DELAY_S)
+                    self._stop.wait(WATCH_INTERVAL_S)
+                else:
+                    self._status = WorkerStatus.RECONNECTING
+                    self._stop.wait(REOPEN_DELAY_S)
             finally:
                 source.close()
         self._status = WorkerStatus.STOPPED
